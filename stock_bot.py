@@ -1,7 +1,6 @@
 import discord
 import requests
 import os
-import asyncio
 
 # 设置Discord机器人
 intents = discord.Intents.default()
@@ -11,15 +10,27 @@ client = discord.Client(intents=intents)
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")  # 从环境变量读取 API 密钥
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # 从环境变量读取 Discord 令牌
 
-# 创建一个队列用于存储请求
-task_queue = asyncio.Queue()
+# 机器人启动时的事件
+@client.event
+async def on_ready():
+    print(f'Logged in as {client.user}')
 
-# 定义后台任务来处理队列中的任务
-async def process_queue():
-    while True:
-        # 获取队列中的任务
-        message, stock_symbol = await task_queue.get()
-        
+# 监听消息事件
+@client.event
+async def on_message(message):
+    # 如果消息来自机器人本身，忽略
+    if message.author == client.user:
+        return
+
+    # 仅处理以 $ 开头的消息
+    if message.content.startswith('$'):
+        stock_symbol = message.content[1:].upper()  # 提取股票符号（去掉$）
+
+        # 过滤掉非有效的股票符号
+        if not stock_symbol.isalpha():  # 如果符号不是字母组合（例如 $nio、$aapl）
+            await message.channel.send("无效的股票符号。请使用正确的股票代码。")
+            return
+
         # 请求股票数据
         url = f'https://finnhub.io/api/v1/quote?symbol={stock_symbol}&token={FINNHUB_API_KEY}'
         response = requests.get(url)
@@ -46,35 +57,6 @@ async def process_queue():
                 f'当前价: ${formatted_price}\n'
                 f'涨跌: {formatted_price_change} ({formatted_percent_change}%)'
             )
-
-        # 完成任务
-        task_queue.task_done()
-
-# 机器人启动时的事件
-@client.event
-async def on_ready():
-    print(f'Logged in as {client.user}')
-    # 启动后台任务来处理队列
-    client.loop.create_task(process_queue())
-
-# 监听消息事件
-@client.event
-async def on_message(message):
-    # 如果消息来自机器人本身，忽略
-    if message.author == client.user:
-        return
-
-    # 仅处理以 $ 开头的消息
-    if message.content.startswith('$'):
-        stock_symbol = message.content[1:].upper()  # 提取股票符号（去掉$）
-
-        # 过滤掉非有效的股票符号
-        if not stock_symbol.isalpha():  # 如果符号不是字母组合（例如 $nio、$aapl）
-            await message.channel.send("无效的股票符号。请使用正确的股票代码。")
-            return
-
-        # 将任务添加到队列中
-        await task_queue.put((message, stock_symbol))
 
 # 启动机器人
 client.run(DISCORD_TOKEN)
