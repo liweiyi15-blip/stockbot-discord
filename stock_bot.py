@@ -1,63 +1,51 @@
 import discord
+from discord.ext import commands
 import requests
 import os
 
-# 设置Discord机器人
+# 创建一个 Discord 客户端实例
 intents = discord.Intents.default()
-client = discord.Client(intents=intents)
+client = commands.Bot(command_prefix="/", intents=intents)
 
 # 读取环境变量中的 API 密钥和 Discord 令牌
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")  # 从环境变量读取 API 密钥
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # 从环境变量读取 Discord 令牌
 
-# 机器人启动时的事件
-@client.event
-async def on_ready():
-    print(f'Logged in as {client.user}')  # 确认机器人是否成功登录
+# 注册 /stock 命令
+@client.slash_command(name="stock", description="查询股票价格和涨跌")
+async def stock(ctx, stock_symbol: str):
+    # 请求股票数据
+    url = f'https://finnhub.io/api/v1/quote?symbol={stock_symbol}&token={FINNHUB_API_KEY}'
+    response = requests.get(url)
+    data = response.json()
 
-# 监听消息事件
-@client.event
-async def on_message(message):
-    # 如果消息来自机器人本身，忽略
-    if message.author == client.user:
-        return
+    # 检查是否返回了有效的数据
+    if "error" in data or not data.get("c"):
+        await ctx.send(f'无法找到股票 {stock_symbol} 的信息。请检查股票代码是否正确。')
+    else:
+        # 获取最新的股票价格
+        latest_price = data['c']
+        previous_close = data['pc']
 
-    # 当用户输入的命令是 `/stock` 时
-    if message.content.startswith('/stock '):
-        stock_symbol = message.content[len('/stock '):].upper()  # 提取股票符号（去掉/stock 及空格）
-        
-        # 请求股票数据
-        url = f'https://finnhub.io/api/v1/quote?symbol={stock_symbol}&token={FINNHUB_API_KEY}'
-        response = requests.get(url)
-        data = response.json()
+        # 计算涨跌幅
+        price_change = latest_price - previous_close
+        percent_change = (price_change / previous_close) * 100
 
-        # 检查是否返回了有效的数据
-        if "error" in data or not data.get("c"):
-            await message.channel.send(f'无法找到股票 {stock_symbol} 的信息。请检查股票代码是否正确。')
-        else:
-            # 获取最新的股票价格
-            latest_price = data['c']
-            previous_close = data['pc']
+        # 生成符号和格式化输出
+        change_symbol = '📈' if price_change > 0 else '📉'
+        percent_change = abs(percent_change)  # 去除负号
 
-            # 计算涨跌幅
-            price_change = latest_price - previous_close
-            percent_change = (price_change / previous_close) * 100
+        # 强制保留小数点后两位
+        formatted_price = f"{latest_price:,.2f}"
+        formatted_price_change = f"{price_change:,.2f}"
+        formatted_percent_change = f"{percent_change:.2f}"
 
-            # 生成符号和格式化输出
-            change_symbol = '📈' if price_change > 0 else '📉'
-            percent_change = abs(percent_change)  # 去除负号
-
-            # 强制保留小数点后两位
-            formatted_price = f"{latest_price:,.2f}"
-            formatted_price_change = f"{price_change:,.2f}"
-            formatted_percent_change = f"{percent_change:.2f}"
-
-            # 构建并发送消息
-            await message.channel.send(
-                f'{change_symbol} {stock_symbol}\n'
-                f'当前价: ${formatted_price}\n'
-                f'涨跌: {formatted_price_change} ({formatted_percent_change}%)'
-            )
+        # 构建并发送消息
+        await ctx.send(
+            f'{change_symbol} {stock_symbol}\n'
+            f'当前价: ${formatted_price}\n'
+            f'涨跌: {formatted_price_change} ({formatted_percent_change}%)'
+        )
 
 # 启动机器人
 client.run(DISCORD_TOKEN)
