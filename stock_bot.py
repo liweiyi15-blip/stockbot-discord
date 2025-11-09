@@ -2,11 +2,11 @@ import discord
 import requests
 import os
 
-# 设置Discord机器人
+# 启用读取消息内容的权限
 intents = discord.Intents.default()
+intents.message_content = True  # 启用读取消息内容权限
 client = discord.Client(intents=intents)
 
-# 读取环境变量中的 API 密钥和 Discord 令牌
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")  # 从环境变量读取 API 密钥
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # 从环境变量读取 Discord 令牌
 
@@ -18,9 +18,8 @@ async def on_ready():
 # 监听消息事件
 @client.event
 async def on_message(message):
-    # 打印接收到的消息内容
-    print(f"Received message: {message.content}")
-    
+    print(f"Received message: {message.content}")  # 用于调试
+
     # 如果消息来自机器人本身，忽略
     if message.author == client.user:
         return
@@ -28,10 +27,6 @@ async def on_message(message):
     # 当用户发送股票代码时，查询股票信息
     if message.content.startswith('$'):
         stock_symbol = message.content[1:].upper()  # 提取股票符号（去掉$）
-        
-        # 发送确认收到消息的反馈
-        await message.channel.send(f"Received stock query for: {stock_symbol}")
-        print(f"Processing stock: {stock_symbol}")  # 打印正在处理的股票代码
         
         # 请求股票数据
         url = f'https://finnhub.io/api/v1/quote?symbol={stock_symbol}&token={FINNHUB_API_KEY}'
