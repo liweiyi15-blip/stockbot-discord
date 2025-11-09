@@ -3,7 +3,7 @@ from discord.ext import commands
 import requests
 import os
 
-# 创建一个 Discord 客户端实例
+# 使用 py-cord 库的 Bot 创建一个客户端实例
 intents = discord.Intents.default()
 client = commands.Bot(command_prefix="/", intents=intents)
 
@@ -12,8 +12,8 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")  # 从环境变量读取 API 密�
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")  # 从环境变量读取 Discord 令牌
 
 # 注册 /stock 命令
-@client.slash_command(name="stock", description="查询股票价格和涨跌")
-async def stock(ctx, stock_symbol: str):
+@client.tree.command(name="stock", description="查询股票价格和涨跌")
+async def stock(interaction: discord.Interaction, stock_symbol: str):
     # 请求股票数据
     url = f'https://finnhub.io/api/v1/quote?symbol={stock_symbol}&token={FINNHUB_API_KEY}'
     response = requests.get(url)
@@ -21,7 +21,7 @@ async def stock(ctx, stock_symbol: str):
 
     # 检查是否返回了有效的数据
     if "error" in data or not data.get("c"):
-        await ctx.send(f'无法找到股票 {stock_symbol} 的信息。请检查股票代码是否正确。')
+        await interaction.response.send_message(f'无法找到股票 {stock_symbol} 的信息。请检查股票代码是否正确。')
     else:
         # 获取最新的股票价格
         latest_price = data['c']
@@ -41,7 +41,7 @@ async def stock(ctx, stock_symbol: str):
         formatted_percent_change = f"{percent_change:.2f}"
 
         # 构建并发送消息
-        await ctx.send(
+        await interaction.response.send_message(
             f'{change_symbol} {stock_symbol}\n'
             f'当前价: ${formatted_price}\n'
             f'涨跌: {formatted_price_change} ({formatted_percent_change}%)'
