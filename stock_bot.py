@@ -6,7 +6,7 @@ import os
 from datetime import datetime
 import pytz
 
-# Bot 前缀不用了，使用 slash 命令
+# 设置 Bot
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -37,6 +37,12 @@ def get_market_session():
         return "(盘后)"
     else:
         return "(收盘)"
+
+def is_market_open():
+    """判断是否在正常开盘时间"""
+    now = datetime.now(eastern)
+    minutes_now = now.hour * 60 + now.minute
+    return REGULAR_OPEN <= minutes_now < REGULAR_CLOSE
 
 @bot.event
 async def on_ready():
@@ -78,12 +84,19 @@ async def stock(interaction: discord.Interaction, symbol: str):
     formatted_percent_change = f"{percent_change:.2f}"
 
     session_info = get_market_session()
+    market_open = is_market_open()
 
-    await interaction.response.send_message(
+    message = (
         f'{change_symbol} {stock_symbol} {session_info}\n'
         f'当前价: ${formatted_price}\n'
         f'涨跌: {formatted_price_change} ({formatted_percent_change}%)'
     )
+
+    # 如果不是开盘时间，增加提示
+    if not market_open:
+        message += "\n🕒 非开盘时间，无法查询实时股价。"
+
+    await interaction.response.send_message(message)
 
 # 启动机器人
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
