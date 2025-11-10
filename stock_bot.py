@@ -1,64 +1,69 @@
+# stock_bot.py
 import discord
-import requests
-from datetime import datetime
-import pytz
+from discord.ext import commands
+import yfinance as yf
 
+# ==========================
+# 填入你的Token
+# ==========================
+DISCORD_TOKEN = "MTQzNzEyNTQ4ODI0MDc1NDc4MA.GxNsek.WGqOf6XdxY8A7vcocI27CyotYU8-f8URLPIzZ4"
+FINNHUB_TOKEN = "d48omf9r01qnpsnoq1vgd48omf9r01qnpsnoq200"
+
+# 设置机器人前缀
 intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix="$", intents=intents)
 
-FINNHUB_API_KEY = "你的APIKEY"
-DISCORD_TOKEN = "你的DISCORD TOKEN"
-
-eastern = pytz.timezone('US/Eastern')
-REGULAR_OPEN = 9*60+30
-REGULAR_CLOSE = 16*60
-PRE_MARKET_OPEN = 4*60
-PRE_MARKET_CLOSE = 9*60+30
-AFTER_HOURS_OPEN = 16*60
-AFTER_HOURS_CLOSE = 20*60
-
-def get_market_session():
-    now = datetime.now(eastern)
-    minutes_now = now.hour*60 + now.minute
-    if PRE_MARKET_OPEN <= minutes_now < PRE_MARKET_CLOSE:
-        return "(盘前)"
-    elif REGULAR_OPEN <= minutes_now < REGULAR_CLOSE:
-        return ""
-    elif AFTER_HOURS_OPEN <= minutes_now < AFTER_HOURS_CLOSE:
-        return "(盘后)"
-    else:
-        return "(收盘)"
-
-@client.event
+# 机器人启动事件
+@bot.event
 async def on_ready():
-    print(f'Logged in as {client.user}')
+    print(f"Logged in as {bot.user}")
 
-@client.event
-async def on_message(message):
-    if message.author == client.user:
-        return
-    if message.content.startswith('$'):
-        stock_symbol = message.content[1:].upper()
-        url = f'https://finnhub.io/api/v1/quote?symbol={stock_symbol}&token={FINNHUB_API_KEY}'
-        response = requests.get(url)
-        data = response.json()
-        if "error" in data or not data.get("c"):
-            await message.channel.send(f'❌ 无法找到股票 {stock_symbol}')
+# 股票查询命令
+@bot.command(name="stock", help="查询股票信息, 用法：$stock TSLA")
+async def stock(ctx, *, code: str):
+    code = code.upper()
+    try:
+        stock = yf.Ticker(code)
+        data = stock.info
+
+        # 获取价格信息
+        current = data.get("regularMarketPrice")
+        pre = data.get("preMarketPrice")
+        post = data.get("postMarketPrice")
+        change = data.get("regularMarketChange")
+        change_percent = data.get("regularMarketChangePercent")
+
+        # 判断数据是否存在
+        if current is None:
+            await ctx.send(f"❌ 无法找到股票 {code} 的信息，请检查代码是否正确。")
             return
-        latest_price = data['c']
-        previous_close = data['pc']
-        price_change = latest_price - previous_close
-        percent_change = (price_change / previous_close) * 100
-        change_symbol = '📈' if price_change > 0 else '📉'
-        formatted_price = f"{latest_price:,.2f}"
-        formatted_price_change = f"{price_change:,.2f}"
-        formatted_percent_change = f"{percent_change:.2f}"
-        session_info = get_market_session()
-        await message.channel.send(
-            f'{change_symbol} {stock_symbol} {session_info}\n'
-            f'当前价: ${formatted_price}\n'
-            f'涨跌: {formatted_price_change} ({formatted_percent_change}%)'
-        )
 
-client.run(DISCORD_TOKEN)
+        msg = f"📉 {code}\n"
+        msg += f"收盘: ${current:.2f}\n"
+        if pre is not None:
+            msg += f"盘前: ${pre:.2f}\n"
+        if post is not None:
+            msg += f"盘后: ${post:.2f}\n"
+        if change is not None and change_percent is not None:
+            msg += f"涨跌: {change:.2f} ({change_percent:.2f}%)"
+
+        await ctx.send(msg)
+
+    except Exception as e:
+        await ctx.send(f"❌ 查询 {code} 时出错：{e}")
+
+# 支持 $TSLA 直接查询
+@bot.event
+async def on_message(message):
+    if message.author == bot.user:
+        return
+
+    if message.content.startswith("$"):
+        code = message.content[1:].strip()
+        ctx = await bot.get_context(message)
+        await stock(ctx, code=code)
+
+    await bot.process_commands(message)
+
+# 启动机器人
+bot.run(DISCORD_TOKEN)
