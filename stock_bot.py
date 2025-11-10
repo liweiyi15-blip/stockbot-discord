@@ -35,7 +35,7 @@ def get_market_session():
     elif AFTER_HOURS_OPEN <= minutes_now < AFTER_HOURS_CLOSE:
         return "（盘后）"
     else:
-        return "非交易时段 ❌"
+        return "（收盘）"
 
 # 机器人启动事件
 @client.event
@@ -80,4 +80,5 @@ async def on_message(message):
 
 # 启动机器人
 client.run(DISCORD_TOKEN)
+
 
