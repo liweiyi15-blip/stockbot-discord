@@ -33,7 +33,7 @@ def get_market_session():
     elif REGULAR_OPEN <= minutes_now < REGULAR_CLOSE:
         return ""  # 正常开盘，无提示
     elif AFTER_HOURS_OPEN <= minutes_now < AFTER_HOURS_CLOSE:
-        return "（盘后交易）"
+        return "（盘后）"
     else:
         return "（收盘）"
 
@@ -61,4 +61,5 @@ async def on_message(message):
 
         url = f'https://finnhub.io/api/v1/quote?symbol={stock_symbol_full}&token={FINNHUB_API_KEY}'
         response =
+
 
