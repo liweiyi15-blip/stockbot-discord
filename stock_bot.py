@@ -19,7 +19,7 @@ if not FMP_API_KEY:
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ===== 获取当前美东时间 =====
+# ===== 获取美东时间 =====
 def get_ny_time():
     ny_tz = pytz.timezone("America/New_York")
     return datetime.now(ny_tz)
@@ -29,17 +29,19 @@ def market_status():
     now = get_ny_time()
     weekday = now.weekday()
     if weekday >= 5:
-        return "closed"  # 周末
+        return "closed_night"  # 周末算作收盘
     open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
     close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
     aftermarket_end = now.replace(hour=20, minute=0, second=0, microsecond=0)  # 盘后到20:00
 
-    if open_time <= now <= close_time:
-        return "open"
+    if now < open_time:
+        return "pre_market"       # 盘前
+    elif open_time <= now <= close_time:
+        return "open"             # 盘中
     elif close_time < now <= aftermarket_end:
-        return "aftermarket"
+        return "aftermarket"      # 盘后
     else:
-        return "closed_night"
+        return "closed_night"     # 夜盘/收盘
 
 # ===== Slash Command: /stock =====
 @bot.tree.command(name="stock", description="查询美股价格")
@@ -52,36 +54,38 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
     status = market_status()
     try:
-        # 获取前一交易日收盘价和当前价（Stock Quote）
-        quote_url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={FMP_API_KEY}"
+        # 获取 Stock Quote
+        quote_url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
         quote_data = requests.get(quote_url).json()
         if not quote_data:
             await interaction.response.send_message(f"❌ 未找到股票代码 `{symbol}` 的信息。")
             return
-        prev_close = quote_data[0].get("previousClose")
-        stock_price = quote_data[0].get("price")
+
+        stock_price = quote_data[0]["price"]
+        prev_close = quote_data[0]["previousClose"]
 
         price_to_show = stock_price
+        change_amount = quote_data[0]["change"]
+        change_pct = quote_data[0]["changePercentage"]
 
-        # 盘后尝试使用 Aftermarket Quote
-        if status == "aftermarket":
-            after_url = f"https://financialmodelingprep.com/api/v3/quote-after-market/{symbol}?apikey={FMP_API_KEY}"
+        # 盘前/盘后阶段使用 Aftermarket Quote
+        if status in ["pre_market", "aftermarket"]:
+            after_url = f"https://financialmodelingprep.com/stable/aftermarket-quote?symbol={symbol}&apikey={FMP_API_KEY}"
             after_data = requests.get(after_url).json()
-            if after_data and "bidPrice" in after_data[0]:
-                price_to_show = after_data[0]["bidPrice"]
+            if after_data and isinstance(after_data, list) and len(after_data) > 0:
+                bid_price = after_data[0].get("bidPrice")
+                if bid_price:
+                    price_to_show = bid_price
+                    change_amount = bid_price - stock_price
+                    change_pct = (change_amount / stock_price) * 100
 
-        # 计算涨跌幅和百分比
-        if prev_close:
-            change_amount = price_to_show - prev_close
-            change_pct = (change_amount / prev_close) * 100
-            emoji = "📈" if change_amount >= 0 else "📉"
-        else:
-            change_amount = 0
-            change_pct = 0
-            emoji = "📈"
+        # 判断涨跌 emoji
+        emoji = "📈" if change_amount >= 0 else "📉"
 
-        # 设置市场标签
-        if status == "open":
+        # 市场标签
+        if status == "pre_market":
+            label = "盘前"
+        elif status == "open":
             label = "盘中"
         elif status == "aftermarket":
             label = "盘后"
