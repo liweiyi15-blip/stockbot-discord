@@ -17,15 +17,12 @@ bot = commands.Bot(command_prefix="$", intents=intents)
 
 # ===== 工具函数 =====
 def get_ny_time():
-    """返回当前纽约时间（美东时间）"""
     tz = pytz.timezone('America/New_York')
     return datetime.now(tz)
 
 def market_status():
-    """判断当前美股市场时段"""
     now = get_ny_time()
     weekday = now.weekday()
-    
     if weekday >= 5:
         return "closed_night"
     
@@ -92,20 +89,16 @@ async def stock(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
     symbol = symbol.upper().strip()
-
     status = market_status()
 
     fh = fetch_finnhub_quote(symbol)
-    price_to_show = None
-    change_amount = None
-    change_pct = None
+    price_to_show = change_amount = change_pct = None
 
     if fh and fh["c"] != 0:
         price_to_show = fh["c"]
         prev_close = fh["pc"]
         change_amount = price_to_show - prev_close
         change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
-
     else:
         fmp = fetch_fmp_stock(symbol)
         if fmp:
@@ -114,7 +107,6 @@ async def stock(interaction: discord.Interaction, symbol: str):
             if not stock_price or not prev_close:
                 await interaction.followup.send("未找到该股票数据")
                 return
-
             price_to_show = stock_price
             change_amount = fmp.get("change") or (stock_price - prev_close)
             change_pct = fmp.get("changesPercentage") or ((change_amount / prev_close) * 100)
@@ -129,6 +121,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
             await interaction.followup.send("未找到该股票，或当前无实时数据")
             return
 
+    # 正确！带冒号！Discord 会渲染成绿色上升箭头 / 红色下降箭头
     emoji = "Up" if change_amount >= 0 else "Down"
 
     label_map = {
