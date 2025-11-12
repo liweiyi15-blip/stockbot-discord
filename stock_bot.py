@@ -1,30 +1,55 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
+from discord import app_commands
 import requests
 import os
 from datetime import datetime
 import pytz
 
-# ===== 配置 =====
+# ===== 环境变量 =====
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-FMP_API_KEY = os.getenv("FMP_API_KEY")  # ✅ 从环境变量读取
+FMP_API_KEY = os.getenv("FMP_API_KEY")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
-if not FMP_API_KEY:
-    print("[❌ ERROR] 未设置 FMP_API_KEY！请在环境变量中配置")
-if not DISCORD_TOKEN:
-    print("[❌ ERROR] 未设置 DISCORD_TOKEN！请在环境变量中配置")
-
-# ===== Bot 设置 =====
+# ===== Bot 对象定义 =====
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="$", intents=intents)
 
-# ===== 美东时间 =====
-def get_ny_time():
-    ny_tz = pytz.timezone("America/New_York")
-    return datetime.now(ny_tz)
+# ===== 其他函数: get_ny_time, market_status, fetch_fmp_stock, fetch_fmp_aftermarket, fetch_finnhub_quote =====
 
-# ===== 市场阶段判断 =====
+# FMP 查询函数
+def fetch_fmp_stock(symbol):
+    try:
+        url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            print(f"FMP 请求失败，状态码: {response.status_code}")
+            return None
+        data = response.json()
+        if not data:
+            return None
+        return data[0]
+    except Exception as e:
+        print(f"FMP 查询失败: {e}")
+        return None
+
+# Finnhub 查询函数
+def fetch_finnhub_quote(symbol):
+    try:
+        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            print(f"Finnhub 请求失败，状态码: {response.status_code}")
+            return None
+        data = response.json()
+        if not data:
+            return None
+        return data
+    except Exception as e:
+        print(f"Finnhub 查询失败: {e}")
+        return None
+
+# ===== 市场时段判断 =====
 def market_status():
     now = get_ny_time()
     weekday = now.weekday()
@@ -43,64 +68,77 @@ def market_status():
     else:
         return "closed_night"
 
-# ===== /stock 命令 =====
+# ===== stock 命令 =====
 @bot.tree.command(name="stock", description="查询美股价格")
 @app_commands.describe(symbol="股票代码，例如 TSLA")
 async def stock(interaction: discord.Interaction, symbol: str):
-    await interaction.response.defer()  # ✅ 告诉 Discord 稍后回复
+    await interaction.response.defer()
+
+    # 处理大写字母
     symbol = symbol.upper()
 
-    if not FMP_API_KEY:
-        await interaction.followup.send("❌ 未设置 FMP_API_KEY，请管理员检查配置。")
-        return
+    # 初始状态
+    price_to_show = None
+    change_amount = None
+    change_pct = None
+    emoji = "📈"
+    label = ""
 
+    # 查询市场时段
     status = market_status()
 
-    try:
-        # ===== Stock Quote =====
-        quote_url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
-        quote_data = requests.get(quote_url, timeout=5).json()
-        if not quote_data:
-            await interaction.followup.send(f"❌ 未找到股票代码 `{symbol}` 的信息。")
-            return
-        stock_price = quote_data[0]["price"]
-        change_amount = quote_data[0]["change"]
-        change_pct = quote_data[0]["changePercentage"]
-
+    # 首先尝试用 FMP 查询
+    stock = fetch_fmp_stock(symbol)
+    
+    if stock:
+        stock_price = stock["price"]
+        prev_close = stock["previousClose"]
         price_to_show = stock_price
+        change_amount = stock["change"]
+        change_pct = stock["changePercentage"]
 
-        # ===== 盘前/盘后使用 Aftermarket Quote =====
+        # 盘前/盘后使用 aftermarket
         if status in ["pre_market", "aftermarket"]:
-            after_url = f"https://financialmodelingprep.com/stable/aftermarket-quote?symbol={symbol}&apikey={FMP_API_KEY}"
-            after_data = requests.get(after_url, timeout=5).json()
-            if after_data and len(after_data) > 0 and after_data[0].get("bidPrice"):
-                bid_price = after_data[0]["bidPrice"]
+            after = fetch_fmp_aftermarket(symbol)
+            if after and after.get("bidPrice"):
+                bid_price = after["bidPrice"]
                 price_to_show = bid_price
                 change_amount = bid_price - stock_price
                 change_pct = (change_amount / stock_price) * 100
-
-        # ===== 涨跌 emoji =====
-        emoji = "📈" if change_amount >= 0 else "📉"
-
-        # ===== 时段标签 =====
-        if status == "pre_market":
-            label = "盘前"
-        elif status == "open":
-            label = "盘中"
-        elif status == "aftermarket":
-            label = "盘后"
+    else:
+        # FMP 查询不到数据，尝试用 Finnhub 查询
+        fh = fetch_finnhub_quote(symbol)
+        if fh:
+            stock_price = fh["c"]
+            prev_close = fh["pc"]
+            price_to_show = stock_price
+            change_amount = stock_price - prev_close
+            change_pct = (change_amount / prev_close) * 100
         else:
-            label = "收盘"
+            # 如果 FMP 和 Finnhub 都查不到
+            await interaction.followup.send("😭 此代码不支持该时段查询")
+            return
 
-        # ===== 构建消息 =====
-        msg = f"{emoji} {symbol} ({label})\n当前价: ${price_to_show:.2f}\n涨跌: ${change_amount:+.2f} ({change_pct:+.2f}%)"
-        if status == "closed_night":
-            msg += "\n💤 收盘阶段，无法查询实时数据。"
+    # 判断涨跌 emoji
+    emoji = "📈" if change_amount >= 0 else "📉"
 
-        await interaction.followup.send(msg)
+    # 时段标签
+    if status == "pre_market":
+        label = "盘前"
+    elif status == "open":
+        label = "盘中"
+    elif status == "aftermarket":
+        label = "盘后"
+    else:
+        label = "收盘"
 
-    except Exception as e:
-        await interaction.followup.send(f"❌ 查询出错: {e}")
+    # 构建消息
+    msg = f"{emoji} {symbol} ({label})\n当前价: ${price_to_show:.2f}\n涨跌: ${change_amount:+.2f} ({change_pct:+.2f}%)"
+    if status == "closed_night":
+        msg += "\n💤 收盘阶段，无法查询实时数据。"
+
+    # 发送消息
+    await interaction.followup.send(msg)
 
 # ===== 启动事件 =====
 @bot.event
