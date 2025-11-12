@@ -121,9 +121,10 @@ async def stock(interaction: discord.Interaction, symbol: str):
             await interaction.followup.send("未找到该股票，或当前无实时数据")
             return
 
-    # 正确！带冒号！Discord 会渲染成绿色上升箭头 / 红色下降箭头
-    emoji = "Up" if change_amount >= 0 else "Down"
+    # 根据涨跌选择表情
+    emoji = "📈" if change_amount >= 0 else "📉"
 
+    # 定义市场时段标签
     label_map = {
         "pre_market": "盘前",
         "open": "盘中",
@@ -132,12 +133,13 @@ async def stock(interaction: discord.Interaction, symbol: str):
     }
     label = label_map.get(status, "未知")
 
+    # 构建消息
     msg = f"{emoji} **{symbol}** ({label})\n"
     msg += f"当前价: `${price_to_show:.2f}`\n"
     msg += f"涨跌: `${change_amount:+.2f}` (`{change_pct:+.2f}`%)"
 
     if status == "closed_night":
-        msg += "\nSleeping 夜间收盘，无法获取实时波动。"
+        msg += "\n💤 夜间收盘，无法获取实时股价。"
 
     await interaction.followup.send(msg)
 
