@@ -1,103 +1,86 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
 import requests
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
-# 设置 Bot
+# ===== Debug 检查 Discord Token =====
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+FMP_API_KEY = os.getenv("FMP_API_KEY")  # ✅ 从环境变量读取 API key
+
+print("\n===== DEBUG: 环境变量检查 =====")
+if not DISCORD_TOKEN:
+    print("[❌ ERROR] 未读取到 DISCORD_TOKEN！请到 Railway 设置 Variables。")
+else:
+    print("[✅ INFO] 成功读取到 DISCORD_TOKEN")
+    print(f"前10位: {DISCORD_TOKEN[:10]} ... 后5位: {DISCORD_TOKEN[-5:]}")
+
+if not FMP_API_KEY:
+    print("[⚠️ WARNING] 未读取到 FMP_API_KEY，部分功能可能无法使用。")
+else:
+    print("[✅ INFO] 成功读取到 FMP_API_KEY")
+    print(f"前5位: {FMP_API_KEY[:5]} ... 后3位: {FMP_API_KEY[-3:]}")
+print("=====================================\n")
+
+# ===== 设置 Discord Bot =====
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="$", intents=intents)
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")  # Finnhub API Key
-
-# 定义美东时间时区
-eastern = pytz.timezone('US/Eastern')
-
-# 美股交易时间（分钟数）
-REGULAR_OPEN = 9 * 60 + 30   # 09:30
-REGULAR_CLOSE = 16 * 60      # 16:00
-PRE_MARKET_OPEN = 4 * 60     # 04:00
-PRE_MARKET_CLOSE = 9 * 60 + 30
-AFTER_HOURS_OPEN = 16 * 60
-AFTER_HOURS_CLOSE = 20 * 60  # 20:00
-
-def get_market_session():
-    """返回当前市场阶段字符串"""
-    now = datetime.now(eastern)
-    minutes_now = now.hour * 60 + now.minute
-
-    if PRE_MARKET_OPEN <= minutes_now < PRE_MARKET_CLOSE:
-        return "(盘前)"
-    elif REGULAR_OPEN <= minutes_now < REGULAR_CLOSE:
-        return ""  # 正常开盘无提示
-    elif AFTER_HOURS_OPEN <= minutes_now < AFTER_HOURS_CLOSE:
-        return "(盘后)"
-    else:
-        return "(收盘)"
-
+# ===== 判断美股是否开盘 =====
 def is_market_open():
-    """判断是否在正常开盘时间"""
-    now = datetime.now(eastern)
-    minutes_now = now.hour * 60 + now.minute
-    return REGULAR_OPEN <= minutes_now < REGULAR_CLOSE
+    ny_tz = pytz.timezone("America/New_York")
+    now = datetime.now(ny_tz)
+    weekday = now.weekday()
+    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    if weekday >= 5:
+        return False
+    return market_open <= now <= market_close
 
+# ===== 机器人启动事件 =====
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user}')
-    try:
-        synced = await bot.tree.sync()  # 同步 slash 命令
-        print(f"Synced {len(synced)} command(s)")
-    except Exception as e:
-        print(f"Sync failed: {e}")
+    print(f"✅ 已登录为 {bot.user}")
 
-# 注册 slash 命令 /stock
-@bot.tree.command(name="stock", description="查询股票价格和涨跌")
-@app_commands.describe(symbol="请输入股票代码，例如 TSLA")
-async def stock(interaction: discord.Interaction, symbol: str):
-    stock_symbol = symbol.upper()
+# ===== 股票查询指令 =====
+@bot.event
+async def on_message(message):
+    if message.author == bot.user:
+        return
 
-    url = f'https://finnhub.io/api/v1/quote?symbol={stock_symbol}&token={FINNHUB_API_KEY}'
-    try:
-        response = requests.get(url, timeout=5)
+    if message.content.startswith("$"):
+        symbol = message.content[1:].upper()
+
+        if not FMP_API_KEY:
+            await message.channel.send("❌ 未设置 FMP_API_KEY，请管理员检查配置。")
+            return
+
+        url = f"https://financialmodelingprep.com/stable/quote-short?symbol={symbol}&apikey={FMP_API_KEY}"
+        response = requests.get(url)
         data = response.json()
-    except Exception as e:
-        await interaction.response.send_message(f"❌ 请求股票数据失败: {e}", ephemeral=True)
-        return
 
-    if "error" in data or not data.get("c"):
-        await interaction.response.send_message(f'❌ 无法找到股票 {stock_symbol} 的信息，请检查代码是否正确。', ephemeral=True)
-        return
+        if not data:
+            await message.channel.send(f"❌ 未找到股票代码 `{symbol}` 的信息。")
+            return
 
-    latest_price = data['c']
-    previous_close = data['pc']
+        price = data[0]["price"]
+        change = data[0].get("change", 0)
+        volume = data[0].get("volume", 0)
 
-    price_change = latest_price - previous_close
-    percent_change = (price_change / previous_close) * 100
+        if is_market_open():
+            title = f"📈 {symbol} (盘中)"
+        else:
+            title = f"📉 {symbol} (盘后)"
 
-    change_symbol = '📈' if price_change > 0 else '📉'
+        msg = (
+            f"{title}\n"
+            f"当前价: ${price:.2f}\n"
+            f"涨跌: {change:+.2f}\n"
+            f"成交量: {volume:,}"
+        )
+        await message.channel.send(msg)
 
-    formatted_price = f"{latest_price:,.2f}"
-    formatted_price_change = f"{price_change:,.2f}"
-    formatted_percent_change = f"{percent_change:.2f}"
-
-    session_info = get_market_session()
-    market_open = is_market_open()
-
-    message = (
-        f'{change_symbol} {stock_symbol} {session_info}\n'
-        f'当前价: ${formatted_price}\n'
-        f'涨跌: {formatted_price_change} ({formatted_percent_change}%)'
-    )
-
-    # 如果不是开盘时间，增加提示
-    if not market_open:
-        message += "\n🕒 非开盘时间，无法查询实时股价。"
-
-    await interaction.response.send_message(message)
-
-# 启动机器人
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+# ===== 启动机器人 =====
 bot.run(DISCORD_TOKEN)
