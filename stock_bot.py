@@ -1,86 +1,113 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import requests
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
-# ===== Debug 检查 Discord Token =====
+# ===== 读取环境变量 =====
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-FMP_API_KEY = os.getenv("FMP_API_KEY")  # ✅ 从环境变量读取 API key
+FMP_API_KEY = os.getenv("FMP_API_KEY")
 
-print("\n===== DEBUG: 环境变量检查 =====")
 if not DISCORD_TOKEN:
-    print("[❌ ERROR] 未读取到 DISCORD_TOKEN！请到 Railway 设置 Variables。")
-else:
-    print("[✅ INFO] 成功读取到 DISCORD_TOKEN")
-    print(f"前10位: {DISCORD_TOKEN[:10]} ... 后5位: {DISCORD_TOKEN[-5:]}")
-
+    print("[❌ ERROR] 未读取到 DISCORD_TOKEN！")
 if not FMP_API_KEY:
     print("[⚠️ WARNING] 未读取到 FMP_API_KEY，部分功能可能无法使用。")
-else:
-    print("[✅ INFO] 成功读取到 FMP_API_KEY")
-    print(f"前5位: {FMP_API_KEY[:5]} ... 后3位: {FMP_API_KEY[-3:]}")
-print("=====================================\n")
 
-# ===== 设置 Discord Bot =====
+# ===== 设置 Bot =====
 intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="$", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ===== 判断美股是否开盘 =====
-def is_market_open():
+# ===== 获取当前美东时间 =====
+def get_ny_time():
     ny_tz = pytz.timezone("America/New_York")
-    now = datetime.now(ny_tz)
+    return datetime.now(ny_tz)
+
+# ===== 判断市场时段 =====
+def market_status():
+    now = get_ny_time()
     weekday = now.weekday()
-    market_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
     if weekday >= 5:
-        return False
-    return market_open <= now <= market_close
+        return "closed"  # 周末
+    open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    aftermarket_end = now.replace(hour=20, minute=0, second=0, microsecond=0)  # 盘后到20:00
 
-# ===== 机器人启动事件 =====
-@bot.event
-async def on_ready():
-    print(f"✅ 已登录为 {bot.user}")
+    if open_time <= now <= close_time:
+        return "open"
+    elif close_time < now <= aftermarket_end:
+        return "aftermarket"
+    else:
+        return "closed_night"
 
-# ===== 股票查询指令 =====
-@bot.event
-async def on_message(message):
-    if message.author == bot.user:
+# ===== Slash Command: /stock =====
+@bot.tree.command(name="stock", description="查询美股价格")
+@app_commands.describe(symbol="股票代码，例如 TSLA")
+async def stock(interaction: discord.Interaction, symbol: str):
+    symbol = symbol.upper()
+    if not FMP_API_KEY:
+        await interaction.response.send_message("❌ 未设置 FMP_API_KEY，请管理员检查配置。")
         return
 
-    if message.content.startswith("$"):
-        symbol = message.content[1:].upper()
-
-        if not FMP_API_KEY:
-            await message.channel.send("❌ 未设置 FMP_API_KEY，请管理员检查配置。")
+    status = market_status()
+    try:
+        # 获取前一交易日收盘价和当前价（Stock Quote）
+        quote_url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={FMP_API_KEY}"
+        quote_data = requests.get(quote_url).json()
+        if not quote_data:
+            await interaction.response.send_message(f"❌ 未找到股票代码 `{symbol}` 的信息。")
             return
+        prev_close = quote_data[0].get("previousClose")
+        stock_price = quote_data[0].get("price")
 
-        url = f"https://financialmodelingprep.com/stable/quote-short?symbol={symbol}&apikey={FMP_API_KEY}"
-        response = requests.get(url)
-        data = response.json()
+        price_to_show = stock_price
 
-        if not data:
-            await message.channel.send(f"❌ 未找到股票代码 `{symbol}` 的信息。")
-            return
+        # 盘后尝试使用 Aftermarket Quote
+        if status == "aftermarket":
+            after_url = f"https://financialmodelingprep.com/api/v3/quote-after-market/{symbol}?apikey={FMP_API_KEY}"
+            after_data = requests.get(after_url).json()
+            if after_data and "bidPrice" in after_data[0]:
+                price_to_show = after_data[0]["bidPrice"]
 
-        price = data[0]["price"]
-        change = data[0].get("change", 0)
-        volume = data[0].get("volume", 0)
-
-        if is_market_open():
-            title = f"📈 {symbol} (盘中)"
+        # 计算涨跌幅和百分比
+        if prev_close:
+            change_amount = price_to_show - prev_close
+            change_pct = (change_amount / prev_close) * 100
+            emoji = "📈" if change_amount >= 0 else "📉"
         else:
-            title = f"📉 {symbol} (盘后)"
+            change_amount = 0
+            change_pct = 0
+            emoji = "📈"
+
+        # 设置市场标签
+        if status == "open":
+            label = "盘中"
+        elif status == "aftermarket":
+            label = "盘后"
+        else:
+            label = "收盘"
 
         msg = (
-            f"{title}\n"
-            f"当前价: ${price:.2f}\n"
-            f"涨跌: {change:+.2f}\n"
-            f"成交量: {volume:,}"
+            f"{emoji} {symbol} ({label})\n"
+            f"当前价: ${price_to_show:.2f}\n"
+            f"涨跌: ${change_amount:+.2f} ({change_pct:+.2f}%)"
         )
-        await message.channel.send(msg)
 
-# ===== 启动机器人 =====
+        # 夜盘提示
+        if status == "closed_night":
+            msg += "\n💤 收盘阶段，无法查询实时数据。"
+
+        await interaction.response.send_message(msg)
+
+    except Exception as e:
+        await interaction.response.send_message(f"❌ 查询出错: {e}")
+
+# ===== 启动事件 =====
+@bot.event
+async def on_ready():
+    await bot.tree.sync()
+    print(f"✅ 已登录为 {bot.user}，Slash Command 已同步到 Discord")
+
+# ===== 启动 Bot =====
 bot.run(DISCORD_TOKEN)
