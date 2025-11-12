@@ -15,51 +15,26 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="$", intents=intents)
 
-# ===== 其他函数: get_ny_time, market_status, fetch_fmp_stock, fetch_fmp_aftermarket, fetch_finnhub_quote =====
+# ===== 工具函数 =====
+def get_ny_time():
+    """返回当前纽约时间（美东时间）"""
+    tz = pytz.timezone('America/New_York')
+    return datetime.now(tz)
 
-# FMP 查询函数
-def fetch_fmp_stock(symbol):
-    try:
-        url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            print(f"FMP 请求失败，状态码: {response.status_code}")
-            return None
-        data = response.json()
-        if not data:
-            return None
-        return data[0]
-    except Exception as e:
-        print(f"FMP 查询失败: {e}")
-        return None
-
-# Finnhub 查询函数
-def fetch_finnhub_quote(symbol):
-    try:
-        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            print(f"Finnhub 请求失败，状态码: {response.status_code}")
-            return None
-        data = response.json()
-        if not data:
-            return None
-        return data
-    except Exception as e:
-        print(f"Finnhub 查询失败: {e}")
-        return None
-
-# ===== 市场时段判断 =====
 def market_status():
+    """判断当前美股市场时段"""
     now = get_ny_time()
     weekday = now.weekday()
+    
     if weekday >= 5:
         return "closed_night"
+    
     open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
     close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
     aftermarket_end = now.replace(hour=20, minute=0, second=0, microsecond=0)
+    premarket_start = now.replace(hour=4, minute=0, second=0, microsecond=0)
 
-    if now < open_time:
+    if premarket_start <= now < open_time:
         return "pre_market"
     elif open_time <= now <= close_time:
         return "open"
@@ -68,83 +43,119 @@ def market_status():
     else:
         return "closed_night"
 
-# ===== stock 命令 =====
-@bot.tree.command(name="stock", description="查询美股价格")
+# ===== 数据源函数 =====
+def fetch_finnhub_quote(symbol: str):
+    try:
+        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or data.get("c") == 0:
+            return None
+        return data
+    except Exception as e:
+        print(f"Finnhub 查询失败: {e}")
+        return None
+
+def fetch_fmp_stock(symbol: str):
+    try:
+        url = f"https://financialmodelingprep.com/api/v5/quote/{symbol}?apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or len(data) == 0:
+            return None
+        return data[0]
+    except Exception as e:
+        print(f"FMP 查询失败: {e}")
+        return None
+
+def fetch_fmp_aftermarket(symbol: str):
+    try:
+        data = fetch_fmp_stock(symbol)
+        if not data:
+            return None
+        if "priceAfterHours" in data and data["priceAfterHours"] is not None:
+            return {"bidPrice": data["priceAfterHours"]}
+        if "afterHours" in data and data["afterHours"] is not None:
+            return {"bidPrice": data["afterHours"]}
+        return None
+    except:
+        return None
+
+# ===== /stock 命令 =====
+@bot.tree.command(name="stock", description="查询美股实时价格（支持盘前/盘后）")
 @app_commands.describe(symbol="股票代码，例如 TSLA")
 async def stock(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
-    # 处理大写字母
-    symbol = symbol.upper()
+    symbol = symbol.upper().strip()
 
-    # 初始状态
+    status = market_status()
+
+    fh = fetch_finnhub_quote(symbol)
     price_to_show = None
     change_amount = None
     change_pct = None
-    emoji = "📈"
-    label = ""
 
-    # 查询市场时段
-    status = market_status()
+    if fh and fh["c"] != 0:
+        price_to_show = fh["c"]
+        prev_close = fh["pc"]
+        change_amount = price_to_show - prev_close
+        change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
 
-    # 首先尝试用 FMP 查询
-    stock = fetch_fmp_stock(symbol)
-    
-    if stock:
-        stock_price = stock["price"]
-        prev_close = stock["previousClose"]
-        price_to_show = stock_price
-        change_amount = stock["change"]
-        change_pct = stock["changePercentage"]
-
-        # 盘前/盘后使用 aftermarket
-        if status in ["pre_market", "aftermarket"]:
-            after = fetch_fmp_aftermarket(symbol)
-            if after and after.get("bidPrice"):
-                bid_price = after["bidPrice"]
-                price_to_show = bid_price
-                change_amount = bid_price - stock_price
-                change_pct = (change_amount / stock_price) * 100
     else:
-        # FMP 查询不到数据，尝试用 Finnhub 查询
-        fh = fetch_finnhub_quote(symbol)
-        if fh:
-            stock_price = fh["c"]
-            prev_close = fh["pc"]
+        fmp = fetch_fmp_stock(symbol)
+        if fmp:
+            stock_price = fmp.get("price") or fmp.get("lastPrice")
+            prev_close = fmp.get("previousClose") or fmp.get("prevClose")
+            if not stock_price or not prev_close:
+                await interaction.followup.send("未找到该股票数据")
+                return
+
             price_to_show = stock_price
-            change_amount = stock_price - prev_close
-            change_pct = (change_amount / prev_close) * 100
+            change_amount = fmp.get("change") or (stock_price - prev_close)
+            change_pct = fmp.get("changesPercentage") or ((change_amount / prev_close) * 100)
+
+            if status in ["pre_market", "aftermarket"]:
+                after = fetch_fmp_aftermarket(symbol)
+                if after and after.get("bidPrice"):
+                    price_to_show = after["bidPrice"]
+                    change_amount = price_to_show - stock_price
+                    change_pct = (change_amount / stock_price) * 100
         else:
-            # 如果 FMP 和 Finnhub 都查不到
-            await interaction.followup.send("😭 此代码不支持该时段查询")
+            await interaction.followup.send("未找到该股票，或当前无实时数据")
             return
 
-    # 判断涨跌 emoji
-    emoji = "📈" if change_amount >= 0 else "📉"
+    emoji = "Up" if change_amount >= 0 else "Down"
 
-    # 时段标签
-    if status == "pre_market":
-        label = "盘前"
-    elif status == "open":
-        label = "盘中"
-    elif status == "aftermarket":
-        label = "盘后"
-    else:
-        label = "收盘"
+    label_map = {
+        "pre_market": "盘前",
+        "open": "盘中",
+        "aftermarket": "盘后",
+        "closed_night": "收盘"
+    }
+    label = label_map.get(status, "未知")
 
-    # 构建消息
-    msg = f"{emoji} {symbol} ({label})\n当前价: ${price_to_show:.2f}\n涨跌: ${change_amount:+.2f} ({change_pct:+.2f}%)"
+    msg = f"{emoji} **{symbol}** ({label})\n"
+    msg += f"当前价: `${price_to_show:.2f}`\n"
+    msg += f"涨跌: `${change_amount:+.2f}` (`{change_pct:+.2f}`%)"
+
     if status == "closed_night":
-        msg += "\n💤 收盘阶段，无法查询实时数据。"
+        msg += "\nSleeping 夜间收盘，无法获取实时波动。"
 
-    # 发送消息
     await interaction.followup.send(msg)
 
 # ===== 启动事件 =====
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    print(f"✅ 已登录为 {bot.user}，Slash Command 已同步到 Discord")
+    ny_time = get_ny_time().strftime("%Y-%m-%d %H:%M:%S %Z")
+    print(f"Bot 已上线: {bot.user}")
+    print(f"纽约时间: {ny_time}")
+    print(f"Slash 命令已同步")
 
 # ===== 启动 Bot =====
 bot.run(DISCORD_TOKEN)
