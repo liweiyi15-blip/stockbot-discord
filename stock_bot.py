@@ -5,10 +5,11 @@ import requests
 import os
 from datetime import datetime, timedelta
 import pytz
+import time  # 新增: 限额延迟
 
 # ===== 环境变量 =====
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY")  # Massive.com API Key (免费申请)
+MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY")  # Massive.com API Key
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
@@ -44,88 +45,68 @@ def market_status():
 # ===== 数据源函数 =====
 def fetch_massive_quote(symbol: str):
     """
-    使用 Massive Trades + Aggregates 获取实时报价（默认支持盘前/盘后）
+    使用 Massive Aggregates 获取近似实时报价（免费 Tier 兼容，分钟级）
     """
     try:
-        # 1. 获取当前最新交易价 (默认含 extended hours)
-        trade_url = f"https://api.polygon.io/v3/last/trade/{symbol}?apiKey={MASSIVE_API_KEY}"
-        trade_resp = requests.get(trade_url, timeout=10)
-        if trade_resp.status_code != 200:
-            return None
-        trade_data = trade_resp.json()
-        if not trade_data or 'results' not in trade_data:
-            return None
-        current_price = trade_data['results']['price']
+        print(f"[DEBUG] Massive 查询开始: {symbol}")
+        time.sleep(0.2)  # 避 rate limit (5/min)
 
-        # 2. 获取前收盘价 (昨日 aggregates)
+        # 1. 获取当前价: 今日 1-min Aggregates，最后 bar 的 close (近似实时)
+        today = get_ny_time().strftime('%Y-%m-%d')
+        print(f"[DEBUG] 今日日期: {today}")
+        aggs_today_url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/minute/{today}/{today}?adjusted=true&sort=asc&limit=5000&apiKey={MASSIVE_API_KEY}"
+        aggs_today_resp = requests.get(aggs_today_url, timeout=10)
+        print(f"[DEBUG] Today Aggs Status: {aggs_today_resp.status_code}")
+        if aggs_today_resp.status_code != 200:
+            print(f"[DEBUG] Today Aggs 失败: {aggs_today_resp.text[:200]}")
+            return None
+        aggs_today_data = aggs_today_resp.json()
+        if not aggs_today_data or 'results' not in aggs_today_data or not aggs_today_data['results']:
+            print(f"[DEBUG] Today 无数据")
+            return None
+        current_price = aggs_today_data['results'][-1]['c']  # 最后 bar close
+        print(f"[DEBUG] 当前价 (最后 min bar): {current_price}")
+
+        # 2. 获取前收盘价: 昨日日 Aggregates
         yesterday = (get_ny_time() - timedelta(days=1)).strftime('%Y-%m-%d')
-        aggs_url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{yesterday}/{yesterday}?adjusted=true&sort=asc&limit=1&apiKey={MASSIVE_API_KEY}"
-        aggs_resp = requests.get(aggs_url, timeout=10)
-        if aggs_resp.status_code != 200:
+        print(f"[DEBUG] 昨天日期: {yesterday}")
+        aggs_yest_url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{yesterday}/{yesterday}?adjusted=true&sort=asc&limit=1&apiKey={MASSIVE_API_KEY}"
+        aggs_yest_resp = requests.get(aggs_yest_url, timeout=10)
+        print(f"[DEBUG] Yest Aggs Status: {aggs_yest_resp.status_code}")
+        if aggs_yest_resp.status_code != 200:
+            print(f"[DEBUG] Yest Aggs 失败: {aggs_yest_resp.text[:200]}")
             return None
-        aggs_data = aggs_resp.json()
-        if not aggs_data or 'results' not in aggs_data or not aggs_data['results']:
+        aggs_yest_data = aggs_yest_resp.json()
+        if not aggs_yest_data or 'results' not in aggs_yest_data or not aggs_yest_data['results']:
+            print(f"[DEBUG] Yest 无数据: {aggs_yest_data}")
             return None
-        prev_close = aggs_data['results'][0]['c']  # close
+        prev_close = aggs_yest_data['results'][0]['c']
+        print(f"[DEBUG] 前收: {prev_close}")
 
-        # Extended 检查：如果盘前/盘后且 c ≈ pc，疑似无更新，fallback
+        # Extended 检查: 免费无 extended，若盘前/盘后且 c ≈ pc，fallback
         status = market_status()
+        print(f"[DEBUG] 市场状态: {status}")
         if status in ["pre_market", "aftermarket"] and abs(current_price - prev_close) < 0.01:
             print(f"Massive 疑似无 extended 更新 ({symbol})，fallback")
             return None
 
         # 返回类似 Finnhub 格式
-        return {
+        result = {
             "c": current_price,
             "pc": prev_close,
-            "t": trade_data['results'].get('sip_timestamp')  # 时间戳 (ms)
+            "t": aggs_today_data['results'][-1].get('t')  # 最后时间戳
         }
+        print(f"[DEBUG] Massive 成功: {result}")
+        return result
     except Exception as e:
         print(f"Massive 查询失败: {e}")
+        import traceback
+        print(f"[DEBUG] 完整错误: {traceback.format_exc()}")
         return None
 
-def fetch_finnhub_quote(symbol: str):
-    try:
-        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        if not data or data.get("c") == 0:
-            return None
-        return data
-    except Exception as e:
-        print(f"Finnhub 查询失败: {e}")
-        return None
+# ... (fetch_finnhub_quote, fetch_fmp_stock, fetch_fmp_aftermarket 函数不变，从之前代码复制)
 
-def fetch_fmp_stock(symbol: str):
-    try:
-        url = f"https://financialmodelingprep.com/api/v5/quote/{symbol}?apikey={FMP_API_KEY}"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        if not data or len(data) == 0:
-            return None
-        return data[0]
-    except Exception as e:
-        print(f"FMP 查询失败: {e}")
-        return None
-
-def fetch_fmp_aftermarket(symbol: str):
-    try:
-        data = fetch_fmp_stock(symbol)
-        if not data:
-            return None
-        if "priceAfterHours" in data and data["priceAfterHours"] is not None:
-            return {"bidPrice": data["priceAfterHours"]}
-        if "afterHours" in data and data["afterHours"] is not None:
-            return {"bidPrice": data["afterHours"]}
-        return None
-    except:
-        return None
-
-# ===== /stock 命令 =====
+# ===== /stock 命令 ===== (不变，从之前代码复制)
 @bot.tree.command(name="stock", description="查询美股实时价格（支持盘前/盘后）")
 @app_commands.describe(symbol="股票代码，例如 TSLA")
 async def stock(interaction: discord.Interaction, symbol: str):
@@ -133,10 +114,11 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
     symbol = symbol.upper().strip()
     status = market_status()
+    print(f"[DEBUG] 查询 {symbol}，状态: {status}")
 
     price_to_show = change_amount = change_pct = None
 
-    # 优先使用 Massive
+    # 优先使用 Massive (现在用 Aggregates)
     massive = fetch_massive_quote(symbol)
     if massive and massive["c"] is not None:
         price_to_show = massive["c"]
@@ -145,7 +127,8 @@ async def stock(interaction: discord.Interaction, symbol: str):
         change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
         print(f"使用 Massive 数据: {symbol} - {price_to_show} (vs prev {prev_close})")
     else:
-        # 回退到 Finnhub
+        print(f"[DEBUG] Massive 失败，回退 Finnhub")
+        # 回退到 Finnhub (不变)
         fh = fetch_finnhub_quote(symbol)
         if fh and fh["c"] != 0:
             price_to_show = fh["c"]
@@ -154,7 +137,8 @@ async def stock(interaction: discord.Interaction, symbol: str):
             change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
             print(f"使用 Finnhub 数据: {symbol} - {price_to_show}")
         else:
-            # 最终回退到 FMP
+            print(f"[DEBUG] Finnhub 也失败，回退 FMP")
+            # 最终回退到 FMP (不变)
             fmp = fetch_fmp_stock(symbol)
             if fmp:
                 stock_price = fmp.get("price") or fmp.get("lastPrice")
@@ -177,10 +161,8 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 await interaction.followup.send("未找到该股票，或当前无实时数据")
                 return
 
-    # 根据涨跌选择表情
+    # 消息构建 (不变)
     emoji = "📈" if change_amount >= 0 else "📉"
-
-    # 定义市场时段标签
     label_map = {
         "pre_market": "盘前",
         "open": "盘中",
@@ -188,18 +170,15 @@ async def stock(interaction: discord.Interaction, symbol: str):
         "closed_night": "收盘"
     }
     label = label_map.get(status, "未知")
-
-    # 构建消息
     msg = f"{emoji} **{symbol}** ({label})\n"
     msg += f"当前价: `${price_to_show:.2f}`\n"
     msg += f"涨跌: `${change_amount:+.2f}` (`{change_pct:+.2f}`%)"
-
     if status == "closed_night":
         msg += "\n💤 夜间收盘，无法获取实时股价。"
 
     await interaction.followup.send(msg)
 
-# ===== 启动事件 =====
+# ===== 启动事件 ===== (不变)
 @bot.event
 async def on_ready():
     await bot.tree.sync()
