@@ -57,42 +57,61 @@ def fetch_finnhub_quote(symbol: str):
 
 def fetch_fmp_stock(symbol: str):
     try:
-        url = f"https://financialmodelingprep.com/api/v5/quote/{symbol}?apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/stable/quote/{symbol}?apikey={FMP_API_KEY}"
         response = requests.get(url, timeout=10)
         if response.status_code != 200:
             return None
         data = response.json()
         if not data or len(data) == 0:
             return None
+        print(f"[DEBUG] FMP stable quote raw: {data[0]}")  # 打印 raw 诊断
         return data[0]
     except Exception as e:
-        print(f"FMP 查询失败: {e}")
+        print(f"FMP stock 查询失败: {e}")
         return None
 
 def fetch_fmp_aftermarket(symbol: str):
     try:
-        data = fetch_fmp_stock(symbol)
-        if not data:
+        url = f"https://financialmodelingprep.com/stable/aftermarket-quote?symbol={symbol}&apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            print(f"[DEBUG] FMP aftermarket API 失败: {response.status_code}")
             return None
-        if "priceAfterHours" in data and data["priceAfterHours"] is not None:
-            return {"bidPrice": data["priceAfterHours"]}
-        if "afterHours" in data and data["afterHours"] is not None:
-            return {"bidPrice": data["afterHours"]}
+        data = response.json()
+        if not data or len(data) == 0:
+            print(f"[DEBUG] FMP aftermarket 无数据")
+            return None
+        item = data[0]
+        print(f"[DEBUG] FMP aftermarket raw: {item}")  # 打印 raw
+        if 'bidPrice' in item and item['bidPrice'] is not None and item['bidPrice'] > 0:
+            print(f"[DEBUG] FMP aftermarket 使用 bidPrice: {item['bidPrice']}")
+            return {"bidPrice": item['bidPrice']}
+        print(f"[DEBUG] FMP aftermarket 无有效 bidPrice")
         return None
-    except:
+    except Exception as e:
+        print(f"FMP aftermarket 查询失败: {e}")
         return None
 
 def fetch_fmp_premarket(symbol: str):
     try:
-        data = fetch_fmp_stock(symbol)
-        if not data:
+        url = f"https://financialmodelingprep.com/stable/premarket-quote?symbol={symbol}&apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            print(f"[DEBUG] FMP premarket API 失败: {response.status_code}")
             return None
-        if "pricePreMarket" in data and data["pricePreMarket"] is not None:
-            return {"bidPrice": data["pricePreMarket"]}
-        if "preMarket" in data and data["preMarket"] is not None:
-            return {"bidPrice": data["preMarket"]}
+        data = response.json()
+        if not data or len(data) == 0:
+            print(f"[DEBUG] FMP premarket 无数据")
+            return None
+        item = data[0]
+        print(f"[DEBUG] FMP premarket raw: {item}")  # 打印 raw
+        if 'bidPrice' in item and item['bidPrice'] is not None and item['bidPrice'] > 0:
+            print(f"[DEBUG] FMP premarket 使用 bidPrice: {item['bidPrice']}")
+            return {"bidPrice": item['bidPrice']}
+        print(f"[DEBUG] FMP premarket 无有效 bidPrice")
         return None
-    except:
+    except Exception as e:
+        print(f"FMP premarket 查询失败: {e}")
         return None
 
 # ===== /stock 命令 =====
@@ -114,12 +133,11 @@ async def stock(interaction: discord.Interaction, symbol: str):
         fh = fetch_finnhub_quote(symbol)
         if fh and fh["c"] != 0:
             price_to_show = fh["c"]
-            change_amount = fh.get("d", 0)  # 用 API 的 d
-            change_pct = fh.get("dp", 0)    # 用 API 的 dp
+            change_amount = fh.get("d", 0)
+            change_pct = fh.get("dp", 0)
             print(f"使用 Finnhub 开盘数据: {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
         else:
             print(f"[DEBUG] Finnhub 开盘失败，回退 FMP")
-            # 回退到 FMP
             fmp = fetch_fmp_stock(symbol)
             if fmp:
                 stock_price = fmp.get("price") or fmp.get("lastPrice")
@@ -137,11 +155,12 @@ async def stock(interaction: discord.Interaction, symbol: str):
     else:
         # 其余时段优先 FMP
         fmp = fetch_fmp_stock(symbol)
+        stock_price = None
         if fmp:
             stock_price = fmp.get("price") or fmp.get("lastPrice")
             prev_close = fmp.get("previousClose") or fmp.get("prevClose")
             if not stock_price or not prev_close:
-                fmp = None  # 标记失败
+                fmp = None
 
         extended_price = None
         if status == "pre_market":
@@ -155,27 +174,30 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
         if extended_price:
             price_to_show = extended_price
-            # 对于 extended，change 相对于 regular close
-            change_amount = fmp.get("change") or (extended_price - stock_price) if stock_price else 0
-            change_pct = fmp.get("changesPercentage") or ((change_amount / stock_price) * 100) if stock_price else 0
-            print(f"使用 FMP 扩展时段数据: {symbol} - {price_to_show}")
-        elif fmp and stock_price:  # FMP 有 regular 数据，但非 extended 时段用 regular? 按要求，如果无 extended 则 fallback
-            # 但按要求，其余时段优先 FMP，但如果无 extended 则 fallback
-            # 假设如果 status 非 open 且无 extended，则 fallback
+            # extended 涨跌: 相对 regular close (stock_price 是上一个收盘价/regular close)
+            if stock_price:
+                change_amount = extended_price - stock_price
+                change_pct = (change_amount / stock_price) * 100
+            else:
+                change_amount = 0
+                change_pct = 0
+            print(f"使用 FMP 扩展时段数据: {symbol} - {price_to_show} (vs regular close {stock_price}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
+            use_fallback = False  # 有 extended, 无备注
+        elif fmp and stock_price:
+            # 有 regular 但无 extended: fallback
             use_fallback = True
         else:
             use_fallback = True
 
         if use_fallback:
-            print(f"[DEBUG] FMP 其余时段失败，回退 Finnhub")
+            print(f"[DEBUG] 无 FMP extended，回退 Finnhub")
             fh = fetch_finnhub_quote(symbol)
-            if fh and fh["c"] != 0:  # 夜间 c 就是最新 close
+            if fh and fh["c"] != 0:
                 price_to_show = fh["c"]
-                change_amount = fh.get("d", 0)  # 用 API 的 d
-                change_pct = fh.get("dp", 0)    # 用 API 的 dp
-                print(f"使用 Finnhub quote (night close): {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
+                change_amount = fh.get("d", 0)
+                change_pct = fh.get("dp", 0)
+                print(f"使用 Finnhub fallback: {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
             else:
-                # 极少情况：无数据，用 pc + 0
                 if fh and fh["pc"] != 0:
                     price_to_show = fh["pc"]
                     change_amount = 0
