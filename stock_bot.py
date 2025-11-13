@@ -126,7 +126,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
         else:
             use_fallback = True
     else:
-        # 其他时段用 Aftermarket Quote (按要求，包括 pre_market)
+        # 其他时段用 Aftermarket Quote (包括 pre_market)
         extended = fetch_fmp_aftermarket_quote(symbol)
         extended_price = None
         if extended and extended.get("bidPrice"):
@@ -134,13 +134,14 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
         if extended_price:
             price_to_show = extended_price
-            if regular_price:
-                change_amount = extended_price - regular_price
-                change_pct = (change_amount / regular_price) * 100
+            # 修复: 涨跌相对 prev_close (上一个收盘价)
+            if prev_close:
+                change_amount = extended_price - prev_close
+                change_pct = (change_amount / prev_close) * 100
             else:
                 change_amount = 0
                 change_pct = 0
-            print(f"使用 FMP {status} aftermarket-quote 数据: {symbol} - {price_to_show} (vs regular {regular_price}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
+            print(f"使用 FMP {status} aftermarket-quote 数据: {symbol} - {price_to_show} (vs prev_close {prev_close}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
             use_fallback = False
         elif fmp and regular_price:
             # 无 extended，用 regular (e.g., closed_night)
