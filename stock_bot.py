@@ -104,7 +104,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
     price_to_show = change_amount = change_pct = None
     use_fallback = False
-    fallback_note = "🚫 该时段不支持实时查询，使用前收盘价。"
+    fallback_note = "🚫 该时段不支持实时查询，显示收盘价。"
 
     # FMP Stock Quote for regular_price
     fmp = fetch_fmp_stock(symbol)
@@ -173,10 +173,10 @@ async def stock(interaction: discord.Interaction, symbol: str):
             await interaction.followup.send("未找到该股票，或当前无数据")
             return
 
-    # 表情
+    # 根据涨跌选择表情
     emoji = "📈" if change_amount >= 0 else "📉"
 
-    # 标签
+    # 定义市场时段标签
     label_map = {
         "pre_market": "盘前",
         "open": "盘中",
@@ -185,7 +185,11 @@ async def stock(interaction: discord.Interaction, symbol: str):
     }
     label = label_map.get(status, "未知")
 
-    # 消息
+    # 如果 fallback 且为 extended 时段，标签改为 "收盘"
+    if use_fallback and status in ["pre_market", "aftermarket"]:
+        label = "收盘"
+
+    # 构建消息
     msg = f"{emoji} **{symbol}** ({label})\n"
     msg += f"当前价: `${price_to_show:.2f}`\n"
     msg += f"涨跌: `${change_amount:+.2f}` (`{change_pct:+.2f}`%)"
