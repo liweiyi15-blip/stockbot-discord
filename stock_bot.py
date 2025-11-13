@@ -104,9 +104,48 @@ def fetch_massive_quote(symbol: str):
         print(f"[DEBUG] 完整错误: {traceback.format_exc()}")
         return None
 
-# ... (fetch_finnhub_quote, fetch_fmp_stock, fetch_fmp_aftermarket 函数不变，从之前代码复制)
+def fetch_finnhub_quote(symbol: str):
+    try:
+        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or data.get("c") == 0:
+            return None
+        return data
+    except Exception as e:
+        print(f"Finnhub 查询失败: {e}")
+        return None
 
-# ===== /stock 命令 ===== (不变，从之前代码复制)
+def fetch_fmp_stock(symbol: str):
+    try:
+        url = f"https://financialmodelingprep.com/api/v5/quote/{symbol}?apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or len(data) == 0:
+            return None
+        return data[0]
+    except Exception as e:
+        print(f"FMP 查询失败: {e}")
+        return None
+
+def fetch_fmp_aftermarket(symbol: str):
+    try:
+        data = fetch_fmp_stock(symbol)
+        if not data:
+            return None
+        if "priceAfterHours" in data and data["priceAfterHours"] is not None:
+            return {"bidPrice": data["priceAfterHours"]}
+        if "afterHours" in data and data["afterHours"] is not None:
+            return {"bidPrice": data["afterHours"]}
+        return None
+    except:
+        return None
+
+# ===== /stock 命令 =====
 @bot.tree.command(name="stock", description="查询美股实时价格（支持盘前/盘后）")
 @app_commands.describe(symbol="股票代码，例如 TSLA")
 async def stock(interaction: discord.Interaction, symbol: str):
@@ -128,7 +167,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
         print(f"使用 Massive 数据: {symbol} - {price_to_show} (vs prev {prev_close})")
     else:
         print(f"[DEBUG] Massive 失败，回退 Finnhub")
-        # 回退到 Finnhub (不变)
+        # 回退到 Finnhub
         fh = fetch_finnhub_quote(symbol)
         if fh and fh["c"] != 0:
             price_to_show = fh["c"]
@@ -138,7 +177,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
             print(f"使用 Finnhub 数据: {symbol} - {price_to_show}")
         else:
             print(f"[DEBUG] Finnhub 也失败，回退 FMP")
-            # 最终回退到 FMP (不变)
+            # 最终回退到 FMP
             fmp = fetch_fmp_stock(symbol)
             if fmp:
                 stock_price = fmp.get("price") or fmp.get("lastPrice")
@@ -161,8 +200,10 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 await interaction.followup.send("未找到该股票，或当前无实时数据")
                 return
 
-    # 消息构建 (不变)
+    # 根据涨跌选择表情
     emoji = "📈" if change_amount >= 0 else "📉"
+
+    # 定义市场时段标签
     label_map = {
         "pre_market": "盘前",
         "open": "盘中",
@@ -170,15 +211,18 @@ async def stock(interaction: discord.Interaction, symbol: str):
         "closed_night": "收盘"
     }
     label = label_map.get(status, "未知")
+
+    # 构建消息
     msg = f"{emoji} **{symbol}** ({label})\n"
     msg += f"当前价: `${price_to_show:.2f}`\n"
     msg += f"涨跌: `${change_amount:+.2f}` (`{change_pct:+.2f}`%)"
+
     if status == "closed_night":
         msg += "\n💤 夜间收盘，无法获取实时股价。"
 
     await interaction.followup.send(msg)
 
-# ===== 启动事件 ===== (不变)
+# ===== 启动事件 =====
 @bot.event
 async def on_ready():
     await bot.tree.sync()
