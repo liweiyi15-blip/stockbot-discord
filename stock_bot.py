@@ -116,12 +116,12 @@ async def stock(interaction: discord.Interaction, symbol: str):
         if not regular_price or not prev_close:
             fmp = None
 
-    # 兜底 regular_price: 如果 FMP 无，用 Finnhub pc
+    # 兜底 regular_price: 如果 FMP 无，用 Finnhub c (latest close)
     if not regular_price:
         fh_temp = fetch_finnhub_quote(symbol)
         if fh_temp:
-            regular_price = fh_temp.get("pc")
-            print(f"[DEBUG] FMP 无 regular_price，用 Finnhub pc: {regular_price}")
+            regular_price = fh_temp.get("c")  # 用 c 作为 latest close
+            print(f"[DEBUG] FMP 无 regular_price，用 Finnhub c: {regular_price}")
 
     if status == "open":
         # 开盘用 Stock Quote
@@ -141,7 +141,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
         if extended_price:
             price_to_show = extended_price
-            # 修复: 涨跌相对 regular_price (Stock Quote price)
+            # 涨跌相对 regular_price (Stock Quote price 或 Finnhub c 兜底)
             if regular_price:
                 change_amount = extended_price - regular_price
                 change_pct = (change_amount / regular_price) * 100
