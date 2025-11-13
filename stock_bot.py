@@ -130,8 +130,19 @@ async def stock(interaction: discord.Interaction, symbol: str):
             change_amount = fmp.get("change") or (regular_price - prev_close)
             change_pct = fmp.get("changesPercentage") or ((change_amount / prev_close) * 100 if prev_close != 0 else 0)
             print(f"使用 FMP 开盘数据: {symbol} - {price_to_show} (change={change_amount:+.2f} ({change_pct:+.2f}%)")
+            use_fallback = False  # 开盘即使 fallback 也不加备注
         else:
-            use_fallback = True
+            # 开盘 fallback 到 Finnhub
+            fh = fetch_finnhub_quote(symbol)
+            if fh and fh["c"] != 0:
+                price_to_show = fh["c"]
+                change_amount = fh.get("d", 0)
+                change_pct = fh.get("dp", 0)
+                print(f"使用 Finnhub 开盘 fallback: {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
+                use_fallback = False  # 开盘不加备注
+            else:
+                await interaction.followup.send("未找到该股票，或当前无数据")
+                return
     else:
         # 其他时段用 Aftermarket Quote (包括 pre_market)
         extended = fetch_fmp_aftermarket_quote(symbol)
@@ -160,8 +171,8 @@ async def stock(interaction: discord.Interaction, symbol: str):
         else:
             use_fallback = True
 
-    # Fallback to Finnhub
-    if use_fallback and not price_to_show:
+    # Fallback to Finnhub for non-open
+    if use_fallback and not price_to_show and status != "open":
         print(f"[DEBUG] FMP 失败，回退 Finnhub")
         fh = fetch_finnhub_quote(symbol)
         if fh and fh["c"] != 0:
@@ -170,43 +181,4 @@ async def stock(interaction: discord.Interaction, symbol: str):
             change_pct = fh.get("dp", 0)
             print(f"使用 Finnhub fallback: {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
         else:
-            await interaction.followup.send("未找到该股票，或当前无数据")
-            return
-
-    # 根据涨跌选择表情
-    emoji = "📈" if change_amount >= 0 else "📉"
-
-    # 定义市场时段标签
-    label_map = {
-        "pre_market": "盘前",
-        "open": "盘中",
-        "aftermarket": "盘后",
-        "closed_night": "收盘"
-    }
-    label = label_map.get(status, "未知")
-
-    # 如果 fallback 且为 extended 时段，标签改为 "收盘"
-    if use_fallback and status in ["pre_market", "aftermarket"]:
-        label = "收盘"
-
-    # 构建消息
-    msg = f"{emoji} **{symbol}** ({label})\n"
-    msg += f"当前价: `${price_to_show:.2f}`\n"
-    msg += f"涨跌: `${change_amount:+.2f}` (`{change_pct:+.2f}`%)"
-
-    if use_fallback:
-        msg += f"\n{fallback_note}"
-
-    await interaction.followup.send(msg)
-
-# ===== 启动事件 =====
-@bot.event
-async def on_ready():
-    await bot.tree.sync()
-    ny_time = get_ny_time().strftime("%Y-%m-%d %H:%M:%S %Z")
-    print(f"Bot 已上线: {bot.user}")
-    print(f"纽约时间: {ny_time}")
-    print(f"Slash 命令已同步")
-
-# ===== 启动 Bot =====
-bot.run(DISCORD_TOKEN)
+            await interaction.followup.send("未找到
