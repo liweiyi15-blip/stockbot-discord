@@ -95,28 +95,6 @@ def fetch_fmp_premarket(symbol: str):
     except:
         return None
 
-def fetch_finnhub_daily_close(symbol: str):
-    """
-    用 Finnhub daily candle 获取最新交易日 close + 前一交易日 close（适用于夜盘，计算涨跌）
-    """
-    try:
-        from_time = int((get_ny_time() - timedelta(days=14)).timestamp())  # 最近14天，确保至少2个bar
-        to_time = int(get_ny_time().timestamp())
-        url = f"https://finnhub.io/api/v1/stock/candle?symbol={symbol}&resolution=D&from={from_time}&to={to_time}&token={FINNHUB_API_KEY}"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        if not data or data.get("c") is None or len(data["c"]) < 2:  # 至少2个bar计算涨跌
-            return None
-        latest_close = data["c"][-1]  # 最新交易日 close
-        prev_close = data["c"][-2]    # 前一交易日 close
-        print(f"[DEBUG] Finnhub daily closes: latest={latest_close}, prev={prev_close}")
-        return {"latest": latest_close, "prev": prev_close}
-    except Exception as e:
-        print(f"Finnhub daily 查询失败: {e}")
-        return None
-
 # ===== /stock 命令 =====
 @bot.tree.command(name="stock", description="查询美股实时价格（支持盘前/盘后）")
 @app_commands.describe(symbol="股票代码，例如 TSLA")
@@ -136,10 +114,9 @@ async def stock(interaction: discord.Interaction, symbol: str):
         fh = fetch_finnhub_quote(symbol)
         if fh and fh["c"] != 0:
             price_to_show = fh["c"]
-            prev_close = fh["pc"]
-            change_amount = price_to_show - prev_close
-            change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
-            print(f"使用 Finnhub 开盘数据: {symbol} - {price_to_show}")
+            change_amount = fh.get("d", 0)  # 用 API 的 d
+            change_pct = fh.get("dp", 0)    # 用 API 的 dp
+            print(f"使用 Finnhub 开盘数据: {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
         else:
             print(f"[DEBUG] Finnhub 开盘失败，回退 FMP")
             # 回退到 FMP
@@ -191,34 +168,19 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
         if use_fallback:
             print(f"[DEBUG] FMP 其余时段失败，回退 Finnhub")
-            if status == "closed_night":
-                # 夜盘用 daily closes 计算涨跌
-                daily_data = fetch_finnhub_daily_close(symbol)
-                if daily_data is not None:
-                    price_to_show = daily_data["latest"]
-                    prev_close = daily_data["prev"]
-                    change_amount = price_to_show - prev_close
-                    change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
-                    print(f"使用 Finnhub daily close (with change): {symbol} - {price_to_show} (vs {prev_close})")
-                else:
-                    # 最终fallback pc（无涨跌）
-                    fh = fetch_finnhub_quote(symbol)
-                    if fh and fh["pc"] != 0:
-                        price_to_show = fh["pc"]
-                        change_amount = 0
-                        change_pct = 0
-                        print(f"使用 Finnhub pc fallback: {symbol} - {price_to_show}")
-                    else:
-                        await interaction.followup.send("未找到该股票，或当前无数据")
-                        return
+            fh = fetch_finnhub_quote(symbol)
+            if fh and fh["c"] != 0:  # 夜间 c 就是最新 close
+                price_to_show = fh["c"]
+                change_amount = fh.get("d", 0)  # 用 API 的 d
+                change_pct = fh.get("dp", 0)    # 用 API 的 dp
+                print(f"使用 Finnhub quote (night close): {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
             else:
-                # 非夜盘 fallback 原逻辑（用 pc，change=0）
-                fh = fetch_finnhub_quote(symbol)
+                # 极少情况：无数据，用 pc + 0
                 if fh and fh["pc"] != 0:
                     price_to_show = fh["pc"]
                     change_amount = 0
                     change_pct = 0
-                    print(f"使用 Finnhub pc 数据: {symbol} - {price_to_show}")
+                    print(f"使用 Finnhub pc fallback: {symbol} - {price_to_show}")
                 else:
                     await interaction.followup.send("未找到该股票，或当前无数据")
                     return
