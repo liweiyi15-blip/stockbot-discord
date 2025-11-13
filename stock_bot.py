@@ -8,7 +8,7 @@ import pytz
 
 # ===== 环境变量 =====
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY")  # 新增: Massive.com (前 Polygon.io) API Key
+MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY")  # Massive.com API Key (免费申请)
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
@@ -44,25 +44,35 @@ def market_status():
 # ===== 数据源函数 =====
 def fetch_massive_quote(symbol: str):
     """
-    优先使用 Massive.com (Polygon.io) 获取实时报价，支持盘前/盘后 (extended=true)
+    使用 Massive Trades + Aggregates 获取实时报价，支持盘前/盘后 (extended_hours=true)
     """
     try:
-        url = f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers?ticker={symbol}&extended=true&apiKey={MASSIVE_API_KEY}"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
+        # 1. 获取当前最新交易价 (含 extended)
+        trade_url = f"https://api.polygon.io/v3/last/trade/{symbol}?extended_hours=true&apiKey={MASSIVE_API_KEY}"
+        trade_resp = requests.get(trade_url, timeout=10)
+        if trade_resp.status_code != 200:
             return None
-        data = response.json()
-        if not data or 'results' not in data or not data['results']:
+        trade_data = trade_resp.json()
+        if not trade_data or 'results' not in trade_data:
             return None
-        ticker_data = data['results'][0]
-        day_data = ticker_data.get('day', {})
-        if not day_data or day_data.get('c') is None:
+        current_price = trade_data['results']['price']
+
+        # 2. 获取前收盘价 (昨日 aggregates)
+        yesterday = (get_ny_time() - timedelta(days=1)).strftime('%Y-%m-%d')
+        aggs_url = f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/1/day/{yesterday}/{yesterday}?adjusted=true&sort=asc&limit=1&apiKey={MASSIVE_API_KEY}"
+        aggs_resp = requests.get(aggs_url, timeout=10)
+        if aggs_resp.status_code != 200:
             return None
-        # 返回类似 Finnhub 格式: c (current/close), pc (prev close)
+        aggs_data = aggs_resp.json()
+        if not aggs_data or 'results' not in aggs_data or not aggs_data['results']:
+            return None
+        prev_close = aggs_data['results'][0]['c']  # close
+
+        # 返回类似 Finnhub 格式
         return {
-            "c": day_data.get("c"),
-            "pc": day_data.get("pc"),
-            "t": day_data.get("t")  # 时间戳 (可选)
+            "c": current_price,
+            "pc": prev_close,
+            "t": trade_data['results'].get('sip_timestamp')  # 时间戳 (ms)
         }
     except Exception as e:
         print(f"Massive 查询失败: {e}")
@@ -127,7 +137,14 @@ async def stock(interaction: discord.Interaction, symbol: str):
         prev_close = massive["pc"]
         change_amount = price_to_show - prev_close
         change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
-        print(f"使用 Massive 数据: {symbol} - {price_to_show}")
+        
+        # Extended 检查：如果盘前/盘后且 c ≈ pc，疑似无更新，fallback
+        if status in ["pre_market", "aftermarket"] and abs(price_to_show - prev_close) < 0.01:
+            print(f"Massive 疑似无 extended 更新 ({symbol})，fallback")
+            massive = None
+        
+        if massive:  # 只在有效时打印
+            print(f"使用 Massive 数据: {symbol} - {price_to_show} (vs prev {prev_close})")
     else:
         # 回退到 Finnhub
         fh = fetch_finnhub_quote(symbol)
