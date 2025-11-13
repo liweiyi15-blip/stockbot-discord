@@ -106,7 +106,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
     use_fallback = False
     fallback_note = "🚫 该时段不支持实时查询，使用前收盘价。"
 
-    # FMP 优先
+    # FMP Stock Quote for regular_price
     fmp = fetch_fmp_stock(symbol)
     regular_price = None
     prev_close = None
@@ -115,6 +115,13 @@ async def stock(interaction: discord.Interaction, symbol: str):
         prev_close = fmp.get("previousClose") or fmp.get("prevClose")
         if not regular_price or not prev_close:
             fmp = None
+
+    # 兜底 regular_price: 如果 FMP 无，用 Finnhub pc
+    if not regular_price:
+        fh_temp = fetch_finnhub_quote(symbol)
+        if fh_temp:
+            regular_price = fh_temp.get("pc")
+            print(f"[DEBUG] FMP 无 regular_price，用 Finnhub pc: {regular_price}")
 
     if status == "open":
         # 开盘用 Stock Quote
@@ -134,14 +141,14 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
         if extended_price:
             price_to_show = extended_price
-            # 修复: 涨跌相对 prev_close (上一个收盘价)
-            if prev_close:
-                change_amount = extended_price - prev_close
-                change_pct = (change_amount / prev_close) * 100
+            # 修复: 涨跌相对 regular_price (Stock Quote price)
+            if regular_price:
+                change_amount = extended_price - regular_price
+                change_pct = (change_amount / regular_price) * 100
             else:
                 change_amount = 0
                 change_pct = 0
-            print(f"使用 FMP {status} aftermarket-quote 数据: {symbol} - {price_to_show} (vs prev_close {prev_close}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
+            print(f"使用 FMP {status} aftermarket-quote 数据: {symbol} - {price_to_show} (vs Stock Quote price {regular_price}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
             use_fallback = False
         elif fmp and regular_price:
             # 无 extended，用 regular (e.g., closed_night)
