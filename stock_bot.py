@@ -3,7 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import requests
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # ===== 环境变量 =====
@@ -44,11 +44,11 @@ def market_status():
 # ===== 数据源函数 =====
 def fetch_massive_quote(symbol: str):
     """
-    使用 Massive Trades + Aggregates 获取实时报价，支持盘前/盘后 (extended_hours=true)
+    使用 Massive Trades + Aggregates 获取实时报价（默认支持盘前/盘后）
     """
     try:
-        # 1. 获取当前最新交易价 (含 extended)
-        trade_url = f"https://api.polygon.io/v3/last/trade/{symbol}?extended_hours=true&apiKey={MASSIVE_API_KEY}"
+        # 1. 获取当前最新交易价 (默认含 extended hours)
+        trade_url = f"https://api.polygon.io/v3/last/trade/{symbol}?apiKey={MASSIVE_API_KEY}"
         trade_resp = requests.get(trade_url, timeout=10)
         if trade_resp.status_code != 200:
             return None
@@ -67,6 +67,12 @@ def fetch_massive_quote(symbol: str):
         if not aggs_data or 'results' not in aggs_data or not aggs_data['results']:
             return None
         prev_close = aggs_data['results'][0]['c']  # close
+
+        # Extended 检查：如果盘前/盘后且 c ≈ pc，疑似无更新，fallback
+        status = market_status()
+        if status in ["pre_market", "aftermarket"] and abs(current_price - prev_close) < 0.01:
+            print(f"Massive 疑似无 extended 更新 ({symbol})，fallback")
+            return None
 
         # 返回类似 Finnhub 格式
         return {
@@ -137,14 +143,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
         prev_close = massive["pc"]
         change_amount = price_to_show - prev_close
         change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
-        
-        # Extended 检查：如果盘前/盘后且 c ≈ pc，疑似无更新，fallback
-        if status in ["pre_market", "aftermarket"] and abs(price_to_show - prev_close) < 0.01:
-            print(f"Massive 疑似无 extended 更新 ({symbol})，fallback")
-            massive = None
-        
-        if massive:  # 只在有效时打印
-            print(f"使用 Massive 数据: {symbol} - {price_to_show} (vs prev {prev_close})")
+        print(f"使用 Massive 数据: {symbol} - {price_to_show} (vs prev {prev_close})")
     else:
         # 回退到 Finnhub
         fh = fetch_finnhub_quote(symbol)
