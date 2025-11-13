@@ -8,6 +8,7 @@ import pytz
 
 # ===== 环境变量 =====
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+MASSIVE_API_KEY = os.getenv("MASSIVE_API_KEY")  # 新增: Massive.com (前 Polygon.io) API Key
 FMP_API_KEY = os.getenv("FMP_API_KEY")
 FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
@@ -41,6 +42,32 @@ def market_status():
         return "closed_night"
 
 # ===== 数据源函数 =====
+def fetch_massive_quote(symbol: str):
+    """
+    优先使用 Massive.com (Polygon.io) 获取实时报价，支持盘前/盘后 (extended=true)
+    """
+    try:
+        url = f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers?ticker={symbol}&extended=true&apiKey={MASSIVE_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or 'results' not in data or not data['results']:
+            return None
+        ticker_data = data['results'][0]
+        day_data = ticker_data.get('day', {})
+        if not day_data or day_data.get('c') is None:
+            return None
+        # 返回类似 Finnhub 格式: c (current/close), pc (prev close)
+        return {
+            "c": day_data.get("c"),
+            "pc": day_data.get("pc"),
+            "t": day_data.get("t")  # 时间戳 (可选)
+        }
+    except Exception as e:
+        print(f"Massive 查询失败: {e}")
+        return None
+
 def fetch_finnhub_quote(symbol: str):
     try:
         url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
@@ -91,35 +118,48 @@ async def stock(interaction: discord.Interaction, symbol: str):
     symbol = symbol.upper().strip()
     status = market_status()
 
-    fh = fetch_finnhub_quote(symbol)
     price_to_show = change_amount = change_pct = None
 
-    if fh and fh["c"] != 0:
-        price_to_show = fh["c"]
-        prev_close = fh["pc"]
+    # 优先使用 Massive
+    massive = fetch_massive_quote(symbol)
+    if massive and massive["c"] is not None:
+        price_to_show = massive["c"]
+        prev_close = massive["pc"]
         change_amount = price_to_show - prev_close
         change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
+        print(f"使用 Massive 数据: {symbol} - {price_to_show}")
     else:
-        fmp = fetch_fmp_stock(symbol)
-        if fmp:
-            stock_price = fmp.get("price") or fmp.get("lastPrice")
-            prev_close = fmp.get("previousClose") or fmp.get("prevClose")
-            if not stock_price or not prev_close:
-                await interaction.followup.send("未找到该股票数据")
-                return
-            price_to_show = stock_price
-            change_amount = fmp.get("change") or (stock_price - prev_close)
-            change_pct = fmp.get("changesPercentage") or ((change_amount / prev_close) * 100)
-
-            if status in ["pre_market", "aftermarket"]:
-                after = fetch_fmp_aftermarket(symbol)
-                if after and after.get("bidPrice"):
-                    price_to_show = after["bidPrice"]
-                    change_amount = price_to_show - stock_price
-                    change_pct = (change_amount / stock_price) * 100
+        # 回退到 Finnhub
+        fh = fetch_finnhub_quote(symbol)
+        if fh and fh["c"] != 0:
+            price_to_show = fh["c"]
+            prev_close = fh["pc"]
+            change_amount = price_to_show - prev_close
+            change_pct = (change_amount / prev_close) * 100 if prev_close != 0 else 0
+            print(f"使用 Finnhub 数据: {symbol} - {price_to_show}")
         else:
-            await interaction.followup.send("未找到该股票，或当前无实时数据")
-            return
+            # 最终回退到 FMP
+            fmp = fetch_fmp_stock(symbol)
+            if fmp:
+                stock_price = fmp.get("price") or fmp.get("lastPrice")
+                prev_close = fmp.get("previousClose") or fmp.get("prevClose")
+                if not stock_price or not prev_close:
+                    await interaction.followup.send("未找到该股票数据")
+                    return
+                price_to_show = stock_price
+                change_amount = fmp.get("change") or (stock_price - prev_close)
+                change_pct = fmp.get("changesPercentage") or ((change_amount / prev_close) * 100)
+
+                if status in ["pre_market", "aftermarket"]:
+                    after = fetch_fmp_aftermarket(symbol)
+                    if after and after.get("bidPrice"):
+                        price_to_show = after["bidPrice"]
+                        change_amount = price_to_show - stock_price
+                        change_pct = (change_amount / stock_price) * 100
+                print(f"使用 FMP 数据: {symbol} - {price_to_show}")
+            else:
+                await interaction.followup.send("未找到该股票，或当前无实时数据")
+                return
 
     # 根据涨跌选择表情
     emoji = "📈" if change_amount >= 0 else "📉"
