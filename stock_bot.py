@@ -164,7 +164,6 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 return
 
     # === 3. 构建 Embed ===
-    # 去掉 emoji
     label_map = {
         "pre_market": "(盘前)",
         "open": "",
@@ -179,8 +178,13 @@ async def stock(interaction: discord.Interaction, symbol: str):
     color = 0xFF0000 if change_amount >= 0 else 0x00FF00  # 涨红跌绿
 
     embed = discord.Embed(title=title, color=color)
-    embed.add_field(name="当前价", value=f"${current_price:.2f}", inline=True)
-    embed.add_field(name="涨跌", value=f"${change_amount:+.2f} (`{change_pct:+.2f}`%)", inline=True)
+
+    # 关键：合并为一个 inline 字段 → 手机 + PC 横向并列
+    embed.add_field(
+        name="行情",
+        value=f"**当前价** `${current_price:.2f}`  **涨跌** `${change_amount:+.2f} ({change_pct:+.2f}%)`",
+        inline=True
+    )
 
     # 盘前/盘后/夜盘 无实时价时加提示
     if use_fallback and status != "open":
