@@ -71,12 +71,16 @@ def fetch_fmp_stable_quote(symbol: str):
 
 def fetch_fmp_aftermarket_trade(symbol: str):
     try:
-        url = f"https://financialmodelingprep.com/api/v5/stable/aftermarket-trade?symbol={symbol}&apikey={FMP_API_KEY}"
+        # 修复：使用无版本前缀路径，匹配你的测试 URL
+        url = f"https://financialmodelingprep.com/stable/aftermarket-trade?symbol={symbol}&apikey={FMP_API_KEY}"
         response = requests.get(url, timeout=10)
+        print(f"[DEBUG] FMP aftermarket-trade URL: {url}")  # 新增：打印完整 URL
+        print(f"[DEBUG] FMP aftermarket-trade 状态码: {response.status_code}")  # 保留
         if response.status_code != 200:
-            print(f"[DEBUG] FMP aftermarket-trade 状态码: {response.status_code}")
+            print(f"[DEBUG] FMP aftermarket-trade 响应文本: {response.text[:200]}...")  # 新增：打印 raw 响应（截断）
             return None
         data = response.json()
+        print(f"[DEBUG] FMP aftermarket-trade raw data: {data}")  # 新增：打印完整 data
         if not data or len(data) == 0 or "price" not in data[0] or data[0]["price"] in (None, 0):
             print(f"[DEBUG] FMP aftermarket-trade 无有效 price: {data}")
             return None
@@ -161,7 +165,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 return
 
     # === 3. 构建 Embed ===
-    emoji = "up" if change_amount >= 0 else "down"
+    emoji = "📈" if change_amount >= 0 else "📉"  # 修复：使用实际 emoji（之前是 "up"/"down"，Embed 会显示文本）
     label_map = {
         "pre_market": "(盘前)",
         "open": "",
