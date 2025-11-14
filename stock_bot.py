@@ -168,48 +168,4 @@ async def stock(interaction: discord.Interaction, symbol: str):
             price_to_show = fh["c"]
             change_amount = fh.get("d", 0)
             change_pct = fh.get("dp", 0)
-            print(f"使用 Finnhub fallback: {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
-        else:
-            await interaction.followup.send("未找到该股票，或当前无数据")
-            return
-
-    # 根据涨跌选择表情
-    emoji = "📈" if change_amount >= 0 else "📉"
-
-    # 定义市场时段标签
-    label_map = {
-        "pre_market": "盘前",
-        "open": "",  # 盘中不显示标签
-        "aftermarket": "盘后",
-        "closed_night": "收盘"
-    }
-    label = label_map.get(status, "未知")
-
-    # 如果 fallback 且为 extended 时段，标签改为 "收盘"
-    if use_fallback and status in ["pre_market", "aftermarket"]:
-        label = "收盘"
-
-    # 构建 Embed
-    embed = discord.Embed(
-        title=f"{emoji} **{symbol}** {label}" if label else f"{emoji} **{symbol}**",
-        color=0x00FF00 if change_amount < 0 else 0xFF0000  # 跌绿色, 涨红色
-    )
-    embed.add_field(name="当前价", value=f"${price_to_show:.2f}", inline=True)
-    embed.add_field(name="涨跌", value=f"${change_amount:+.2f} (`{change_pct:+.2f}`%)", inline=True)
-
-    if use_fallback and status != "open":
-        embed.set_footer(text=fallback_note)
-
-    await interaction.followup.send(embed=embed)
-
-# ===== 启动事件 =====
-@bot.event
-async def on_ready():
-    await bot.tree.sync()
-    ny_time = get_ny_time().strftime("%Y-%m-%d %H:%M:%S %Z")
-    print(f"Bot 已上线: {bot.user}")
-    print(f"纽约时间: {ny_time}")
-    print(f"Slash 命令已同步")
-
-# ===== 启动 Bot =====
-bot.run(DISCORD_TOKEN)
+            print(f"使用 Finnhub fallback
