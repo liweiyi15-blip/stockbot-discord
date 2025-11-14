@@ -71,18 +71,17 @@ def fetch_fmp_stable_quote(symbol: str):
 
 def fetch_fmp_aftermarket_trade(symbol: str):
     try:
-        # 修复：使用无版本前缀路径，匹配你的测试 URL
         url = f"https://financialmodelingprep.com/stable/aftermarket-trade?symbol={symbol}&apikey={FMP_API_KEY}"
         response = requests.get(url, timeout=10)
-        print(f"[DEBUG] FMP aftermarket-trade URL: {url}")  # 新增：打印完整 URL
-        print(f"[DEBUG] FMP aftermarket-trade 状态码: {response.status_code}")  # 保留
+        print(f"[DEBUG] FMP aftermarket-trade URL: {url}")
+        print(f"[DEBUG] FMP aftermarket-trade 状态码: {response.status_code}")
         if response.status_code != 200:
-            print(f"[DEBUG] FMP aftermarket-trade 响应文本: {response.text[:200]}...")  # 新增：打印 raw 响应（截断）
+            print(f"[DEBUG] FMP aftermarket-trade 响应: {response.text[:200]}...")
             return None
         data = response.json()
-        print(f"[DEBUG] FMP aftermarket-trade raw data: {data}")  # 新增：打印完整 data
+        print(f"[DEBUG] FMP aftermarket-trade raw data: {data}")
         if not data or len(data) == 0 or "price" not in data[0] or data[0]["price"] in (None, 0):
-            print(f"[DEBUG] FMP aftermarket-trade 无有效 price: {data}")
+            print(f"[DEBUG] FMP aftermarket-trade 无有效 price")
             return None
         return data[0]
     except Exception as e:
@@ -147,7 +146,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 change_pct = (change_amount / base_close) * 100
             print(f"[{status}] 使用 FMP aftermarket-trade.price: {current_price}")
         else:
-            # 无实时价 → 回退显示收盘价 + 提示
+            # 无实时价 → 回退 + 强制显示 (收盘)
             use_fallback = True
             if fh and fh.get("c"):
                 current_price = fh["c"]
@@ -165,16 +164,18 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 return
 
     # === 3. 构建 Embed ===
-    emoji = "📈" if change_amount >= 0 else "📉"  # 修复：使用实际 emoji（之前是 "up"/"down"，Embed 会显示文本）
+    # 去掉 emoji
     label_map = {
         "pre_market": "(盘前)",
         "open": "",
         "aftermarket": "(盘后)",
         "closed_night": "(收盘)"
     }
-    label = label_map.get(status, "(未知)")
 
-    title = f"{emoji} **{symbol}** {label}" if label else f"{emoji} **{symbol}**"
+    # 关键：如果 fallback，盘前/盘后也显示 (收盘)
+    display_label = "(收盘)" if (use_fallback and status != "open") else label_map.get(status, "(收盘)")
+
+    title = f"**{symbol}** {display_label}" if display_label else f"**{symbol}**"
     color = 0xFF0000 if change_amount >= 0 else 0x00FF00  # 涨红跌绿
 
     embed = discord.Embed(title=title, color=color)
