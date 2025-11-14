@@ -152,7 +152,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 current_price = fh["c"]
                 change_amount = fh.get("d", 0)
                 change_pct = fh.get("dp", 0)
-                print(f"[{status}] 无实时价，回退 Finnhub.c: {current_price}")
+                print(f"[{ Pidstatus}] 无实时价，回退 Finnhub.c: {current_price}")
             elif fmp_stable and fmp_stable.get("price"):
                 current_price = fmp_stable["price"]
                 if base_close:
@@ -171,24 +171,22 @@ async def stock(interaction: discord.Interaction, symbol: str):
         "closed_night": "(收盘)"
     }
 
-    # 关键：如果 fallback，盘前/盘后也显示 (收盘)
     display_label = "(收盘)" if (use_fallback and status != "open") else label_map.get(status, "(收盘)")
 
     title = f"**{symbol}** {display_label}" if display_label else f"**{symbol}**"
-    color = 0xFF0000 if change_amount >= 0 else 0x00FF00  # 涨红跌绿
+    color = 0xFF0000 if change_amount >= 0 else 0x00FF00
 
     embed = discord.Embed(title=title, color=color)
 
-    # 关键：合并为一个 inline 字段 → 手机 + PC 横向并列
+    # 最终稳定版：简洁、横向、无标签、无放大
     embed.add_field(
-        name="行情",
+        name="",
         value=f"**当前价** `${current_price:.2f}`  **涨跌** `${change_amount:+.2f} ({change_pct:+.2f}%)`",
         inline=True
     )
 
-    # 盘前/盘后/夜盘 无实时价时加提示
     if use_fallback and status != "open":
-        embed.set_footer(text=fallback_note)
+        embed.set_footer(text="该时段不支持实时查询，显示收盘价。")
 
     await interaction.followup.send(embed=embed)
 
@@ -203,4 +201,3 @@ async def on_ready():
 
 # ===== 启动 Bot =====
 bot.run(DISCORD_TOKEN)
-
