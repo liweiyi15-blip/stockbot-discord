@@ -179,10 +179,10 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
     embed = discord.Embed(title=title, color=color)
 
-    # 关键：合并为一个 inline 字段 → 手机 + PC 横向并列
+    # 关键：保留“当前价”和“涨跌”，字体放大，横向并列
     embed.add_field(
-        name="行情",
-        value=f"**当前价** `${current_price:.2f}`  **涨跌** `${change_amount:+.2f} ({change_pct:+.2f}%)`",
+        name="",  # 去掉字段名
+        value=f"<big>**当前价** `${current_price:.2f}`  **涨跌** `${change_amount:+.2f} ({change_pct:+.2f}%)`</big>",
         inline=True
     )
 
