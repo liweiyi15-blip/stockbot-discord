@@ -152,7 +152,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 current_price = fh["c"]
                 change_amount = fh.get("d", 0)
                 change_pct = fh.get("dp", 0)
-                print(f"[{ Pidstatus}] 无实时价，回退 Finnhub.c: {current_price}")
+                print(f"[{status}] 无实时价，回退 Finnhub.c: {current_price}")  # 修复：status 而非 Pidstatus
             elif fmp_stable and fmp_stable.get("price"):
                 current_price = fmp_stable["price"]
                 if base_close:
