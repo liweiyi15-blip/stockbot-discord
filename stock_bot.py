@@ -130,19 +130,8 @@ async def stock(interaction: discord.Interaction, symbol: str):
             change_amount = fmp.get("change") or (regular_price - prev_close)
             change_pct = fmp.get("changesPercentage") or ((change_amount / prev_close) * 100 if prev_close != 0 else 0)
             print(f"使用 FMP 开盘数据: {symbol} - {price_to_show} (change={change_amount:+.2f} ({change_pct:+.2f}%)")
-            use_fallback = False  # 开盘即使 fallback 也不加备注
         else:
-            # 开盘 fallback 到 Finnhub
-            fh = fetch_finnhub_quote(symbol)
-            if fh and fh["c"] != 0:
-                price_to_show = fh["c"]
-                change_amount = fh.get("d", 0)
-                change_pct = fh.get("dp", 0)
-                print(f"使用 Finnhub 开盘 fallback: {symbol} - {price_to_show} (d={change_amount}, dp={change_pct}%)")
-                use_fallback = False  # 开盘不加备注
-            else:
-                await interaction.followup.send("未找到该股票，或当前无数据")
-                return
+            use_fallback = True
     else:
         # 其他时段用 Aftermarket Quote (包括 pre_market)
         extended = fetch_fmp_aftermarket_quote(symbol)
@@ -171,8 +160,8 @@ async def stock(interaction: discord.Interaction, symbol: str):
         else:
             use_fallback = True
 
-    # Fallback to Finnhub for non-open
-    if use_fallback and not price_to_show and status != "open":
+    # Fallback to Finnhub
+    if use_fallback and not price_to_show:
         print(f"[DEBUG] FMP 失败，回退 Finnhub")
         fh = fetch_finnhub_quote(symbol)
         if fh and fh["c"] != 0:
@@ -200,15 +189,18 @@ async def stock(interaction: discord.Interaction, symbol: str):
     if use_fallback and status in ["pre_market", "aftermarket"]:
         label = "收盘"
 
-    # 构建消息
-    msg = f"{emoji} **{symbol}** {label}\n" if label else f"{emoji} **{symbol}**\n"
-    msg += f"当前价: `${price_to_show:.2f}`\n"
-    msg += f"涨跌: `${change_amount:+.2f}` (`{change_pct:+.2f}`%)"
+    # 构建 Embed
+    embed = discord.Embed(
+        title=f"{emoji} **{symbol}** {label}" if label else f"{emoji} **{symbol}**",
+        color=0x00FF00 if change_amount < 0 else 0xFF0000  # 跌绿色, 涨红色
+    )
+    embed.add_field(name="当前价", value=f"${price_to_show:.2f}", inline=True)
+    embed.add_field(name="涨跌", value=f"${change_amount:+.2f} (`{change_pct:+.2f}`%)", inline=True)
 
     if use_fallback and status != "open":
-        msg += f"\n{fallback_note}"
+        embed.set_footer(text=fallback_note)
 
-    await interaction.followup.send(msg)
+    await interaction.followup.send(embed=embed)
 
 # ===== 启动事件 =====
 @bot.event
