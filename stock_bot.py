@@ -57,7 +57,7 @@ def fetch_finnhub_quote(symbol: str):
 
 def fetch_fmp_stock(symbol: str):
     try:
-        url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/stable/quote/{symbol}?apikey={FMP_API_KEY}"
         response = requests.get(url, timeout=10)
         if response.status_code != 200:
             return None
@@ -70,26 +70,26 @@ def fetch_fmp_stock(symbol: str):
         print(f"FMP stock 查询失败: {e}")
         return None
 
-def fetch_fmp_aftermarket_trade(symbol: str):
+def fetch_fmp_aftermarket_quote(symbol: str):
     try:
-        url = f"https://financialmodelingprep.com/api/v4/pre-post-market-trade/{symbol}?limit=1&apikey={FMP_API_KEY}"
+        url = f"https://financialmodelingprep.com/stable/aftermarket-quote?symbol={symbol}&apikey={FMP_API_KEY}"
         response = requests.get(url, timeout=10)
         if response.status_code != 200:
-            print(f"[DEBUG] FMP pre-post-market-trade API 失败: {response.status_code}")
+            print(f"[DEBUG] FMP aftermarket-quote API 失败: {response.status_code}")
             return None
         data = response.json()
         if not data or len(data) == 0:
-            print(f"[DEBUG] FMP pre-post-market-trade 无数据")
+            print(f"[DEBUG] FMP aftermarket-quote 无数据")
             return None
         item = data[0]
-        print(f"[DEBUG] FMP pre-post-market-trade raw: {item}")
-        if 'price' in item and item['price'] is not None and item['price'] > 0:
-            print(f"[DEBUG] FMP pre-post-market-trade 使用 price: {item['price']}")
-            return {"price": item['price']}
-        print(f"[DEBUG] FMP pre-post-market-trade 无有效 price")
+        print(f"[DEBUG] FMP aftermarket-quote raw: {item}")
+        if 'bidPrice' in item and item['bidPrice'] is not None and item['bidPrice'] > 0:
+            print(f"[DEBUG] FMP aftermarket-quote 使用 bidPrice: {item['bidPrice']}")
+            return {"bidPrice": item['bidPrice']}
+        print(f"[DEBUG] FMP aftermarket-quote 无有效 bidPrice")
         return None
     except Exception as e:
-        print(f"FMP pre-post-market-trade 查询失败: {e}")
+        print(f"FMP aftermarket-quote 查询失败: {e}")
         return None
 
 # ===== /stock 命令 =====
@@ -133,11 +133,11 @@ async def stock(interaction: discord.Interaction, symbol: str):
         else:
             use_fallback = True
     else:
-        # 其他时段用 aftermarket-trade
-        extended = fetch_fmp_aftermarket_trade(symbol)
+        # 其他时段用 Aftermarket Quote (包括 pre_market)
+        extended = fetch_fmp_aftermarket_quote(symbol)
         extended_price = None
-        if extended and extended.get("price"):
-            extended_price = extended["price"]
+        if extended and extended.get("bidPrice"):
+            extended_price = extended["bidPrice"]
 
         if extended_price:
             price_to_show = extended_price
@@ -148,7 +148,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
             else:
                 change_amount = 0
                 change_pct = 0
-            print(f"使用 FMP {status} aftermarket-trade 数据: {symbol} - {price_to_show} (vs Stock Quote price {regular_price}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
+            print(f"使用 FMP {status} aftermarket-quote 数据: {symbol} - {price_to_show} (vs Stock Quote price {regular_price}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
             use_fallback = False
         elif fmp and regular_price:
             # 无 extended，用 regular (e.g., closed_night)
@@ -175,16 +175,16 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
     # 定义市场时段标签
     label_map = {
-        "pre_market": "盘前",
+        "pre_market": "(盘前)",
         "open": "",  # 盘中不显示标签
-        "aftermarket": "盘后",
-        "closed_night": "收盘"
+        "aftermarket": "(盘后)",
+        "closed_night": "(收盘)"
     }
     label = label_map.get(status, "未知")
 
-    # 如果 fallback 且为 extended 时段，标签改为 "收盘"
+    # 如果 fallback 且为 extended 时段，标签改为 "(收盘)"
     if use_fallback and status in ["pre_market", "aftermarket"]:
-        label = "收盘"
+        label = "(收盘)"
 
     # 构建 Embed
     embed = discord.Embed(
