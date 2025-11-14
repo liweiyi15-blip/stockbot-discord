@@ -70,7 +70,7 @@ def fetch_fmp_stock(symbol: str):
         print(f"FMP stock 查询失败: {e}")
         return None
 
-def fetch_fmp_pre_post_trade(symbol: str):
+def fetch_fmp_aftermarket_trade(symbol: str):
     try:
         url = f"https://financialmodelingprep.com/api/v4/pre-post-market-trade/{symbol}?limit=1&apikey={FMP_API_KEY}"
         response = requests.get(url, timeout=10)
@@ -133,8 +133,8 @@ async def stock(interaction: discord.Interaction, symbol: str):
         else:
             use_fallback = True
     else:
-        # 其他时段用 pre-post-market-trade
-        extended = fetch_fmp_pre_post_trade(symbol)
+        # 其他时段用 aftermarket-trade
+        extended = fetch_fmp_aftermarket_trade(symbol)
         extended_price = None
         if extended and extended.get("price"):
             extended_price = extended["price"]
@@ -148,7 +148,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
             else:
                 change_amount = 0
                 change_pct = 0
-            print(f"使用 FMP {status} pre-post-market-trade 数据: {symbol} - {price_to_show} (vs Stock Quote price {regular_price}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
+            print(f"使用 FMP {status} aftermarket-trade 数据: {symbol} - {price_to_show} (vs Stock Quote price {regular_price}, change={change_amount:+.2f} ({change_pct:+.2f}%)")
             use_fallback = False
         elif fmp and regular_price:
             # 无 extended，用 regular (e.g., closed_night)
