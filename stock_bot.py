@@ -41,6 +41,20 @@ def market_status():
         return "closed_night"
 
 # ===== 数据源函数 =====
+def fetch_fmp_quote(symbol: str):
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or len(data) == 0:
+            return None
+        return data[0]
+    except Exception as e:
+        print(f"FMP quote 查询失败: {e}")
+        return None
+
 def fetch_finnhub_quote(symbol: str):
     try:
         url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
@@ -55,48 +69,36 @@ def fetch_finnhub_quote(symbol: str):
         print(f"Finnhub 查询失败: {e}")
         return None
 
-def fetch_fmp_stable_quote(symbol: str):
-    try:
-        url = f"https://financialmodelingprep.com/api/v3/stable/quote/{symbol}?apikey={FMP_API_KEY}"
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return None
-        data = response.json()
-        if not data or len(data) == 0:
-            return None
-        return data[0]
-    except Exception as e:
-        print(f"FMP stable/quote 查询失败: {e}")
-        return None
-
-def fetch_fmp_aftermarket_trade(symbol: str):
+def fetch_fmp_extended_trade(symbol: str):
     try:
         url = f"https://financialmodelingprep.com/stable/aftermarket-trade?symbol={symbol}&apikey={FMP_API_KEY}"
         response = requests.get(url, timeout=10)
-        print(f"[DEBUG] FMP aftermarket-trade URL: {url}")
-        print(f"[DEBUG] FMP aftermarket-trade 状态码: {response.status_code}")
+        print(f"[DEBUG] FMP extended-trade URL: {url}")
+        print(f"[DEBUG] FMP extended-trade 状态码: {response.status_code}")
         if response.status_code != 200:
-            print(f"[DEBUG] FMP aftermarket-trade 响应: {response.text[:200]}...")
+            print(f"[DEBUG] FMP extended-trade 响应: {response.text[:200]}...")
             return None
         data = response.json()
-        print(f"[DEBUG] FMP aftermarket-trade raw data: {data}")
+        print(f"[DEBUG] FMP extended-trade raw data: {data}")
         if not data or len(data) == 0 or "price" not in data[0] or data[0]["price"] in (None, 0):
-            print(f"[DEBUG] FMP aftermarket-trade 无有效 price")
+            print(f"[DEBUG] FMP extended-trade 无有效 price")
             return None
         return data[0]
     except Exception as e:
-        print(f"FMP aftermarket-trade 查询失败: {e}")
+        print(f"FMP extended-trade 查询失败: {e}")
         return None
 
 # ===== /stock 命令 =====
-@bot.tree.command(name="stock", description="查询美股实时价格（支持盘前/盘后）")
-@app_commands.describe(symbol="股票代码，例如 TSLA")
+@bot.tree.command(name="stock", description="查询美股或数字货币实时价格（支持盘前/盘后）")
+@app_commands.describe(symbol="股票代码或数字货币代码，例如 TSLA 或 btc")
 async def stock(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
+    original_symbol = symbol.strip()
     symbol = symbol.upper().strip()
     status = market_status()
-    print(f"[DEBUG] 查询 {symbol}，市场状态: {status}")
+    is_crypto = False
+    print(f"[DEBUG] 查询 {original_symbol}，市场状态: {status}")
 
     # 初始化
     current_price = None
@@ -106,62 +108,92 @@ async def stock(interaction: discord.Interaction, symbol: str):
     use_fallback = False
     fallback_note = "该时段不支持实时查询，显示收盘价。"
 
-    # === 1. 获取涨跌基准价：优先 Finnhub.c → FMP stable/quote.price ===
-    fh = fetch_finnhub_quote(symbol)
-    fmp_stable = fetch_fmp_stable_quote(symbol)
+    # === 0. 检测并处理数字货币 ===
+    fmp_data = fetch_fmp_quote(symbol)
+    if not fmp_data and len(symbol) == 3 and symbol.isalpha():
+        symbol += 'USD'
+        fmp_data = fetch_fmp_quote(symbol)
+        if fmp_data:
+            is_crypto = True
+            print(f"[DEBUG] 检测为数字货币: {original_symbol} -> {symbol}")
+        else:
+            # 恢复原 symbol 以防 fallback
+            symbol = original_symbol.upper().strip()
 
-    if fh and fh.get("c"):
-        base_close = fh["c"]
-        print(f"[基准价] 使用 Finnhub.c: {base_close}")
-    elif fmp_stable and fmp_stable.get("price"):
-        base_close = fmp_stable["price"]
-        print(f"[基准价] 使用 FMP stable/quote.price: {base_close}")
+    display_symbol = original_symbol.upper() if is_crypto else symbol
+
+    # === 1. 获取涨跌基准价：优先 FMP quote.price（非市场时为收盘价） ===
+    if fmp_data and fmp_data.get("price"):
+        base_close = fmp_data["price"]
+        print(f"[基准价] 使用 FMP quote.price: {base_close}")
     else:
-        print(f"[警告] 无法获取 {symbol} 的基准价")
+        fh = fetch_finnhub_quote(symbol)
+        if fh and fh.get("c"):
+            base_close = fh["c"]
+            print(f"[基准价] 回退 Finnhub.c: {base_close}")
+        else:
+            print(f"[警告] 无法获取 {symbol} 的基准价")
 
     # === 2. 获取当前价 ===
-    if status == "open":
-        # 开盘：优先 Finnhub.c → FMP stable/quote.price
-        if fh and fh.get("c"):
-            current_price = fh["c"]
-            change_amount = fh.get("d", 0)
-            change_pct = fh.get("dp", 0)
-            print(f"[开盘] 使用 Finnhub.c: {current_price}")
-        elif fmp_stable and fmp_stable.get("price"):
-            current_price = fmp_stable["price"]
-            change_amount = fmp_stable.get("change", 0)
-            change_pct = fmp_stable.get("changesPercentage", 0)
-            print(f"[开盘] 回退 FMP stable/quote.price: {current_price}")
+    if is_crypto:
+        # 数字货币 24/7，直接使用 FMP quote
+        if fmp_data and fmp_data.get("price"):
+            current_price = fmp_data["price"]
+            change_amount = fmp_data.get("changes", 0)
+            change_pct = fmp_data.get("changesPercentage", 0)
+            print(f"[Crypto] 使用 FMP quote.price: {current_price}")
         else:
-            await interaction.followup.send("未找到该股票，或当前无数据")
+            await interaction.followup.send("未找到该数字货币，或当前无数据")
             return
 
     else:
-        # 盘前 / 盘后 / 夜盘
-        aftermarket_data = fetch_fmp_aftermarket_trade(symbol)
-        if aftermarket_data and aftermarket_data.get("price"):
-            current_price = aftermarket_data["price"]
-            if base_close:
-                change_amount = current_price - base_close
-                change_pct = (change_amount / base_close) * 100
-            print(f"[{status}] 使用 FMP aftermarket-trade.price: {current_price}")
+        # 美股逻辑
+        if status == "open":
+            # 开盘：优先 FMP quote
+            if fmp_data and fmp_data.get("price"):
+                current_price = fmp_data["price"]
+                change_amount = fmp_data.get("changes", 0)
+                change_pct = fmp_data.get("changesPercentage", 0)
+                print(f"[开盘] 使用 FMP quote.price: {current_price}")
+            else:
+                # 回退 Finnhub
+                fh = fetch_finnhub_quote(symbol)
+                if fh and fh.get("c"):
+                    current_price = fh["c"]
+                    change_amount = fh.get("d", 0)
+                    change_pct = fh.get("dp", 0)
+                    print(f"[开盘] 回退 Finnhub.c: {current_price}")
+                else:
+                    await interaction.followup.send("未找到该股票，或当前无数据")
+                    return
+
         else:
-            # 无实时价 → 回退 + 强制显示 (收盘)
-            use_fallback = True
-            if fh and fh.get("c"):
-                current_price = fh["c"]
-                change_amount = fh.get("d", 0)
-                change_pct = fh.get("dp", 0)
-                print(f"[{status}] 无实时价，回退 Finnhub.c: {current_price}")  # 修复：status 而非 Pidstatus
-            elif fmp_stable and fmp_stable.get("price"):
-                current_price = fmp_stable["price"]
+            # 盘前 / 盘后 / 夜盘：优先 FMP extended-trade
+            extended_data = fetch_fmp_extended_trade(symbol)
+            if extended_data and extended_data.get("price"):
+                current_price = extended_data["price"]
                 if base_close:
                     change_amount = current_price - base_close
                     change_pct = (change_amount / base_close) * 100
-                print(f"[{status}] 无实时价，回退 FMP stable/quote.price: {current_price}")
+                print(f"[{status}] 使用 FMP extended-trade.price: {current_price}")
             else:
-                await interaction.followup.send("未找到该股票，或当前无数据")
-                return
+                # 无实时价 → 回退到收盘价
+                use_fallback = True
+                if fmp_data and fmp_data.get("price"):
+                    current_price = fmp_data["price"]
+                    change_amount = fmp_data.get("changes", 0)
+                    change_pct = fmp_data.get("changesPercentage", 0)
+                    print(f"[{status}] 无实时价，回退 FMP quote.price: {current_price}")
+                else:
+                    fh = fetch_finnhub_quote(symbol)
+                    if fh and fh.get("c"):
+                        current_price = fh["c"]
+                        change_amount = fh.get("d", 0)
+                        change_pct = fh.get("dp", 0)
+                        print(f"[{status}] 无实时价，回退 Finnhub.c: {current_price}")
+                    else:
+                        await interaction.followup.send("未找到该股票，或当前无数据")
+                        return
 
     # === 3. 构建 Embed ===
     label_map = {
@@ -171,10 +203,12 @@ async def stock(interaction: discord.Interaction, symbol: str):
         "closed_night": "(收盘)"
     }
 
-    display_label = "(收盘)" if (use_fallback and status != "open") else label_map.get(status, "(收盘)")
+    display_label = "" if is_crypto else label_map.get(status, "(收盘)")
+    if use_fallback and status != "open" and not is_crypto:
+        display_label = "(收盘)"
 
-    title = f"**{symbol}** {display_label}" if display_label else f"**{symbol}**"
-    color = 0xFF0000 if change_amount >= 0 else 0x00FF00
+    title = f"**{display_symbol}** {display_label}" if display_label else f"**{display_symbol}**"
+    color = 0x00FF00 if change_amount >= 0 else 0xFF0000  # 修正颜色：正绿负红
 
     embed = discord.Embed(title=title, color=color)
 
@@ -185,7 +219,7 @@ async def stock(interaction: discord.Interaction, symbol: str):
         inline=True
     )
 
-    if use_fallback and status != "open":
+    if use_fallback and status != "open" and not is_crypto:
         embed.set_footer(text="该时段不支持实时查询，显示收盘价。")
 
     await interaction.followup.send(embed=embed)
