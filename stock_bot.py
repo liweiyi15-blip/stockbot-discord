@@ -252,8 +252,8 @@ async def crypto(interaction: discord.Interaction, symbol: str):
 
     current_price = fmp_data["price"]
     change_amount = fmp_data.get("changes", 0)
-    change_pct = fmp_data.get("changesPercentage", 0)
-    print(f"[Crypto] 使用 FMP crypto quote.price: {current_price}")
+    change_pct = fmp_data.get("changes_percentage", 0)
+    print(f"[Crypto] 使用 FMP crypto quote.price: {current_price}, changes: {change_amount}, changes_percentage: {change_pct}")
 
     # === 构建 Embed ===
     title = f"**{original_symbol}**"
