@@ -102,17 +102,15 @@ def fetch_fmp_extended_trade(symbol: str):
         print(f"FMP extended-trade 查询失败: {e}")
         return None
 
-# ===== /stock 命令 =====
-@bot.tree.command(name="stock", description="查询美股或数字货币实时价格（支持盘前/盘后）")
-@app_commands.describe(symbol="股票代码或数字货币代码，例如 TSLA 或 btc")
+# ===== /stock 命令（仅美股）=====
+@bot.tree.command(name="stock", description="查询美股实时价格（支持盘前/盘后）")
+@app_commands.describe(symbol="股票代码，例如 TSLA")
 async def stock(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
-    original_symbol = symbol.strip()
     symbol = symbol.upper().strip()
     status = market_status()
-    is_crypto = False
-    print(f"[DEBUG] 查询 {original_symbol}，市场状态: {status}")
+    print(f"[DEBUG] 查询股票 {symbol}，市场状态: {status}")
 
     # 初始化
     current_price = None
@@ -122,24 +120,9 @@ async def stock(interaction: discord.Interaction, symbol: str):
     use_fallback = False
     fallback_note = "该时段不支持实时查询，显示收盘价。"
 
-    # === 0. 检测并处理数字货币 ===
-    if len(symbol) == 3 and symbol.isalpha():
-        crypto_symbol = symbol + "USD"
-        crypto_data = fetch_fmp_crypto_quote(crypto_symbol)
-        if crypto_data and crypto_data.get("price"):
-            is_crypto = True
-            fmp_data = crypto_data
-            display_symbol = original_symbol.upper()
-            print(f"[DEBUG] 检测为数字货币: {original_symbol} -> {crypto_symbol}")
-        else:
-            fmp_data = fetch_fmp_stock_quote(symbol)
-            display_symbol = symbol
-    else:
-        fmp_data = fetch_fmp_stock_quote(symbol)
-        display_symbol = symbol
-
-    # === 1. 获取涨跌基准价：优先 FMP ===
-    if not is_crypto and fmp_data and fmp_data.get("price"):
+    # === 1. 获取涨跌基准价：优先 FMP stock quote.price ===
+    fmp_data = fetch_fmp_stock_quote(symbol)
+    if fmp_data and fmp_data.get("price"):
         base_close = fmp_data["price"]
         print(f"[基准价] 使用 FMP stock quote.price: {base_close}")
     else:
@@ -151,40 +134,47 @@ async def stock(interaction: discord.Interaction, symbol: str):
             print(f"[警告] 无法获取 {symbol} 的基准价")
 
     # === 2. 获取当前价 ===
-    if is_crypto:
-        # 数字货币 24/7，直接使用 FMP crypto quote
+    if status == "open":
+        # 开盘：优先 FMP stock quote
         if fmp_data and fmp_data.get("price"):
             current_price = fmp_data["price"]
             change_amount = fmp_data.get("changes", 0)
             change_pct = fmp_data.get("changesPercentage", 0)
-            print(f"[Crypto] 使用 FMP crypto quote.price: {current_price}")
+            print(f"[开盘] 使用 FMP stock quote.price: {current_price}")
         else:
-            await interaction.followup.send("未找到该数字货币，或当前无数据")
-            return
+            # 回退 Finnhub
+            fh = fetch_finnhub_quote(symbol)
+            if fh and fh.get("c"):
+                current_price = fh["c"]
+                change_amount = fh.get("d", 0)
+                change_pct = fh.get("dp", 0)
+                print(f"[开盘] 回退 Finnhub.c: {current_price}")
+            else:
+                await interaction.followup.send("未找到该股票，或当前无数据")
+                return
 
     else:
-        # 美股逻辑
-        if status == "open":
-            # 开盘：优先 FMP stock quote
+        # 非开盘时段
+        if status == "closed_night":
+            # 夜盘/收盘：强制回退到收盘价，不查询 extended-trade
+            use_fallback = True
             if fmp_data and fmp_data.get("price"):
                 current_price = fmp_data["price"]
                 change_amount = fmp_data.get("changes", 0)
                 change_pct = fmp_data.get("changesPercentage", 0)
-                print(f"[开盘] 使用 FMP stock quote.price: {current_price}")
+                print(f"[closed_night] 强制回退 FMP stock quote.price: {current_price}")
             else:
-                # 回退 Finnhub
                 fh = fetch_finnhub_quote(symbol)
                 if fh and fh.get("c"):
                     current_price = fh["c"]
                     change_amount = fh.get("d", 0)
                     change_pct = fh.get("dp", 0)
-                    print(f"[开盘] 回退 Finnhub.c: {current_price}")
+                    print(f"[closed_night] 强制回退 Finnhub.c: {current_price}")
                 else:
                     await interaction.followup.send("未找到该股票，或当前无数据")
                     return
-
         else:
-            # 盘前 / 盘后 / 夜盘：优先 FMP extended-trade
+            # 盘前/盘后：优先 FMP extended-trade
             extended_data = fetch_fmp_extended_trade(symbol)
             if extended_data and extended_data.get("price"):
                 current_price = extended_data["price"]
@@ -219,12 +209,12 @@ async def stock(interaction: discord.Interaction, symbol: str):
         "closed_night": "(收盘)"
     }
 
-    display_label = "" if is_crypto else label_map.get(status, "(收盘)")
-    if use_fallback and status != "open" and not is_crypto:
+    display_label = label_map.get(status, "(收盘)")
+    if use_fallback and status != "open":
         display_label = "(收盘)"
 
-    title = f"**{display_symbol}** {display_label}" if display_label else f"**{display_symbol}**"
-    color = 0x00FF00 if change_amount >= 0 else 0xFF0000  # 正绿负红
+    title = f"**{symbol}** {display_label}" if display_label else f"**{symbol}**"
+    color = 0xFF0000 if change_amount >= 0 else 0x00FF00  # 统一正红负绿
 
     embed = discord.Embed(title=title, color=color)
 
@@ -235,8 +225,44 @@ async def stock(interaction: discord.Interaction, symbol: str):
         inline=True
     )
 
-    if use_fallback and status != "open" and not is_crypto:
+    if use_fallback and status != "open":
         embed.set_footer(text="该时段不支持实时查询，显示收盘价。")
+
+    await interaction.followup.send(embed=embed)
+
+# ===== /crypto 命令（仅数字货币）=====
+@bot.tree.command(name="crypto", description="查询数字货币实时价格")
+@app_commands.describe(symbol="数字货币代码，例如 btc")
+async def crypto(interaction: discord.Interaction, symbol: str):
+    await interaction.response.defer()
+
+    original_symbol = symbol.strip().upper()
+    symbol = original_symbol + "USD" if len(original_symbol) == 3 and original_symbol.isalpha() else original_symbol.upper()
+    print(f"[DEBUG] 查询数字货币 {original_symbol} -> {symbol}")
+
+    # === 获取数据 ===
+    fmp_data = fetch_fmp_crypto_quote(symbol)
+    if not fmp_data or not fmp_data.get("price"):
+        await interaction.followup.send("未找到该数字货币，或当前无数据")
+        return
+
+    current_price = fmp_data["price"]
+    change_amount = fmp_data.get("changes", 0)
+    change_pct = fmp_data.get("changesPercentage", 0)
+    print(f"[Crypto] 使用 FMP crypto quote.price: {current_price}")
+
+    # === 构建 Embed ===
+    title = f"**{original_symbol}**"
+    color = 0xFF0000 if change_amount >= 0 else 0x00FF00  # 统一正红负绿
+
+    embed = discord.Embed(title=title, color=color)
+
+    # 最终稳定版：简洁、横向、无标签、无放大
+    embed.add_field(
+        name="",
+        value=f"**当前价** `${current_price:.2f}`  **涨跌** `${change_amount:+.2f} ({change_pct:+.2f}%)`",
+        inline=True
+    )
 
     await interaction.followup.send(embed=embed)
 
