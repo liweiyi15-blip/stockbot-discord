@@ -232,12 +232,16 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
 # ===== /crypto 命令（仅数字货币）=====
 @bot.tree.command(name="crypto", description="查询数字货币实时价格")
-@app_commands.describe(symbol="数字货币代码，例如 btc")
+@app_commands.describe(symbol="数字货币代码，例如 btc 或 doge")
 async def crypto(interaction: discord.Interaction, symbol: str):
     await interaction.response.defer()
 
     original_symbol = symbol.strip().upper()
-    symbol = original_symbol + "USD" if len(original_symbol) == 3 and original_symbol.isalpha() else original_symbol.upper()
+    # 无论长度多少，都补齐 USD（如果已以 USD 结尾则不重复添加）
+    if not original_symbol.endswith('USD'):
+        symbol = original_symbol + "USD"
+    else:
+        symbol = original_symbol
     print(f"[DEBUG] 查询数字货币 {original_symbol} -> {symbol}")
 
     # === 获取数据 ===
