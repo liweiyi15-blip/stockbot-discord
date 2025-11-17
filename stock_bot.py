@@ -1,122 +1,283 @@
 import discord
 from discord.ext import commands
-import random
+from discord import app_commands
+import requests
 import os
-import asyncio  # 新增：用于sleep动画
-from discord import app_commands  # 用于describe和choices参数
+from datetime import datetime
+import pytz
 
-# 设置Bot意图
+# ===== 环境变量 =====
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+FMP_API_KEY = os.getenv("FMP_API_KEY")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
+
+# ===== Bot 对象定义 =====
 intents = discord.Intents.default()
-intents.message_content = True
+bot = commands.Bot(command_prefix="$", intents=intents)
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+# ===== 工具函数 =====
+def get_ny_time():
+    tz = pytz.timezone('America/New_York')
+    return datetime.now(tz)
 
-# 替换为你的Bot Token（用环境变量）
-TOKEN = os.getenv('DISCORD_TOKEN')
+def market_status():
+    now = get_ny_time()
+    weekday = now.weekday()
+    if weekday >= 5:
+        return "closed_night"
+    
+    open_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    aftermarket_end = now.replace(hour=20, minute=0, second=0, microsecond=0)
+    premarket_start = now.replace(hour=4, minute=0, second=0, microsecond=0)
 
+    if premarket_start <= now < open_time:
+        return "pre_market"
+    elif open_time <= now <= close_time:
+        return "open"
+    elif close_time < now <= aftermarket_end:
+        return "aftermarket"
+    else:
+        return "closed_night"
+
+# ===== 数据源函数 =====
+def fetch_fmp_stock_quote(symbol: str):
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/quote/{symbol}?apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or len(data) == 0:
+            return None
+        return data[0]
+    except Exception as e:
+        print(f"FMP stock quote 查询失败: {e}")
+        return None
+
+def fetch_fmp_crypto_quote(symbol: str):
+    try:
+        url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or len(data) == 0:
+            return None
+        return data[0]
+    except Exception as e:
+        print(f"FMP crypto quote 查询失败: {e}")
+        return None
+
+def fetch_finnhub_quote(symbol: str):
+    try:
+        url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        if not data or data.get("c") in (0, None):
+            return None
+        return data
+    except Exception as e:
+        print(f"Finnhub 查询失败: {e}")
+        return None
+
+def fetch_fmp_extended_trade(symbol: str):
+    try:
+        url = f"https://financialmodelingprep.com/stable/aftermarket-trade?symbol={symbol}&apikey={FMP_API_KEY}"
+        response = requests.get(url, timeout=10)
+        print(f"[DEBUG] FMP extended-trade URL: {url}")
+        print(f"[DEBUG] FMP extended-trade 状态码: {response.status_code}")
+        if response.status_code != 200:
+            print(f"[DEBUG] FMP extended-trade 响应: {response.text[:200]}...")
+            return None
+        data = response.json()
+        print(f"[DEBUG] FMP extended-trade raw data: {data}")
+        if not data or len(data) == 0 or "price" not in data[0] or data[0]["price"] in (None, 0):
+            print(f"[DEBUG] FMP extended-trade 无有效 price")
+            return None
+        return data[0]
+    except Exception as e:
+        print(f"FMP extended-trade 查询失败: {e}")
+        return None
+
+# ===== /stock 命令（仅美股）=====
+@bot.tree.command(name="stock", description="查询美股实时价格（支持盘前/盘后）")
+@app_commands.describe(symbol="股票代码，例如 TSLA")
+async def stock(interaction: discord.Interaction, symbol: str):
+    await interaction.response.defer()
+
+    symbol = symbol.upper().strip()
+    status = market_status()
+    print(f"[DEBUG] 查询股票 {symbol}，市场状态: {status}")
+
+    # 初始化
+    current_price = None
+    change_amount = 0
+    change_pct = 0
+    base_close = None
+    use_fallback = False
+    fallback_note = "该时段不支持实时查询，显示收盘价。"
+
+    # === 1. 获取涨跌基准价：优先 FMP stock quote.price ===
+    fmp_data = fetch_fmp_stock_quote(symbol)
+    if fmp_data and fmp_data.get("price"):
+        base_close = fmp_data["price"]
+        print(f"[基准价] 使用 FMP stock quote.price: {base_close}")
+    else:
+        fh = fetch_finnhub_quote(symbol)
+        if fh and fh.get("c"):
+            base_close = fh["c"]
+            print(f"[基准价] 回退 Finnhub.c: {base_close}")
+        else:
+            print(f"[警告] 无法获取 {symbol} 的基准价")
+
+    # === 2. 获取当前价 ===
+    if status == "open":
+        # 开盘：优先 FMP stock quote
+        if fmp_data and fmp_data.get("price"):
+            current_price = fmp_data["price"]
+            change_amount = fmp_data.get("changes", 0)
+            change_pct = fmp_data.get("changesPercentage", 0)
+            print(f"[开盘] 使用 FMP stock quote.price: {current_price}")
+        else:
+            # 回退 Finnhub
+            fh = fetch_finnhub_quote(symbol)
+            if fh and fh.get("c"):
+                current_price = fh["c"]
+                change_amount = fh.get("d", 0)
+                change_pct = fh.get("dp", 0)
+                print(f"[开盘] 回退 Finnhub.c: {current_price}")
+            else:
+                await interaction.followup.send("未找到该股票，或当前无数据")
+                return
+
+    else:
+        # 非开盘时段
+        if status == "closed_night":
+            # 夜盘/收盘：强制回退到收盘价，不查询 extended-trade
+            use_fallback = True
+            if fmp_data and fmp_data.get("price"):
+                current_price = fmp_data["price"]
+                change_amount = fmp_data.get("changes", 0)
+                change_pct = fmp_data.get("changesPercentage", 0)
+                print(f"[closed_night] 强制回退 FMP stock quote.price: {current_price}")
+            else:
+                fh = fetch_finnhub_quote(symbol)
+                if fh and fh.get("c"):
+                    current_price = fh["c"]
+                    change_amount = fh.get("d", 0)
+                    change_pct = fh.get("dp", 0)
+                    print(f"[closed_night] 强制回退 Finnhub.c: {current_price}")
+                else:
+                    await interaction.followup.send("未找到该股票，或当前无数据")
+                    return
+        else:
+            # 盘前/盘后：优先 FMP extended-trade
+            extended_data = fetch_fmp_extended_trade(symbol)
+            if extended_data and extended_data.get("price"):
+                current_price = extended_data["price"]
+                if base_close:
+                    change_amount = current_price - base_close
+                    change_pct = (change_amount / base_close) * 100
+                print(f"[{status}] 使用 FMP extended-trade.price: {current_price}")
+            else:
+                # 无实时价 → 回退到收盘价
+                use_fallback = True
+                if fmp_data and fmp_data.get("price"):
+                    current_price = fmp_data["price"]
+                    change_amount = fmp_data.get("changes", 0)
+                    change_pct = fmp_data.get("changesPercentage", 0)
+                    print(f"[{status}] 无实时价，回退 FMP stock quote.price: {current_price}")
+                else:
+                    fh = fetch_finnhub_quote(symbol)
+                    if fh and fh.get("c"):
+                        current_price = fh["c"]
+                        change_amount = fh.get("d", 0)
+                        change_pct = fh.get("dp", 0)
+                        print(f"[{status}] 无实时价，回退 Finnhub.c: {current_price}")
+                    else:
+                        await interaction.followup.send("未找到该股票，或当前无数据")
+                        return
+
+    # === 3. 构建 Embed ===
+    label_map = {
+        "pre_market": "(盘前)",
+        "open": "",
+        "aftermarket": "(盘后)",
+        "closed_night": "(收盘)"
+    }
+
+    display_label = label_map.get(status, "(收盘)")
+    if use_fallback and status != "open":
+        display_label = "(收盘)"
+
+    title = f"**{symbol}** {display_label}" if display_label else f"**{symbol}**"
+    color = 0xFF0000 if change_amount >= 0 else 0x00FF00  # 统一正红负绿
+
+    embed = discord.Embed(title=title, color=color)
+
+    # 最终稳定版：简洁、横向、无标签、无放大
+    embed.add_field(
+        name="",
+        value=f"**当前价** `${current_price:.2f}`  **涨跌** `${change_amount:+.2f} ({change_pct:+.2f}%)`",
+        inline=True
+    )
+
+    if use_fallback and status != "open":
+        embed.set_footer(text="该时段不支持实时查询，显示收盘价。")
+
+    await interaction.followup.send(embed=embed)
+
+# ===== /crypto 命令（仅数字货币）=====
+@bot.tree.command(name="crypto", description="查询数字货币实时价格")
+@app_commands.describe(symbol="数字货币代码，例如 btc 或 doge")
+async def crypto(interaction: discord.Interaction, symbol: str):
+    await interaction.response.defer()
+
+    original_symbol = symbol.strip().upper()
+    # 无论长度多少，都补齐 USD（如果已以 USD 结尾则不重复添加）
+    if not original_symbol.endswith('USD'):
+        symbol = original_symbol + "USD"
+    else:
+        symbol = original_symbol
+    print(f"[DEBUG] 查询数字货币 {original_symbol} -> {symbol}")
+
+    # === 获取数据 ===
+    fmp_data = fetch_fmp_crypto_quote(symbol)
+    if not fmp_data or not fmp_data.get("price"):
+        await interaction.followup.send("未找到该数字货币，或当前无数据")
+        return
+
+    current_price = fmp_data["price"]
+    change_amount = fmp_data.get("change", 0)  # FMP stable/quote uses 'change'
+    change_pct = fmp_data.get("changePercentage", 0)  # FMP stable/quote uses 'changePercentage'
+    print(f"[Crypto] 使用 FMP crypto quote.price: {current_price}, change: {change_amount}, changePercentage: {change_pct}")
+
+    # === 构建 Embed ===
+    title = f"**{original_symbol}**"
+    color = 0xFF0000 if change_amount >= 0 else 0x00FF00  # 统一正红负绿
+
+    embed = discord.Embed(title=title, color=color)
+
+    # 最终稳定版：简洁、横向、无标签、无放大
+    embed.add_field(
+        name="",
+        value=f"**当前价** `${current_price:.2f}`  **涨跌** `${change_amount:+.2f} ({change_pct:+.2f}%)`",
+        inline=True
+    )
+
+    await interaction.followup.send(embed=embed)
+
+# ===== 启动事件 =====
 @bot.event
 async def on_ready():
-    print(f'{bot.user} 已上线！好运硬币股票预测模式启动~')
-    try:
-        synced = await bot.tree.sync()
-        print(f'同步了 {len(synced)} 个slash命令')
-    except Exception as e:
-        print(e)
+    await bot.tree.sync()
+    ny_time = get_ny_time().strftime("%Y-%m-%d %H:%M:%S %Z")
+    print(f"Bot 已上线: {bot.user}")
+    print(f"纽约时间: {ny_time}")
+    print(f"Slash 命令已同步")
 
-# 原命令：/lucky stock:字符串（股票代码） day:选择（今天/明天，必选）
-@app_commands.describe(stock="输入你希望被好运祝福的代码")
-@app_commands.describe(day="选择预测日期：今天 或 明天")
-@app_commands.choices(day=[
-    app_commands.Choice(name='今天', value='today'),
-    app_commands.Choice(name='明天', value='tomorrow')
-])
-@bot.tree.command(name='lucky', description='用好运硬币预测股票涨跌！输入股票代码和日期试试运气~')
-async def lucky(interaction: discord.Interaction, stock: str, day: str):
-    # 验证股票代码（简单，大写转换）
-    stock = stock.upper().strip()
-    if not stock:
-        await interaction.response.send_message("哎呀，股票代码不能为空！试试 /lucky stock:TSLA day:今天", ephemeral=True)
-        return
-    
-    # 随机结果：0=正面(涨), 1=反面(跌)
-    result = random.choice([0, 1])
-    is_up = result == 0  # True=涨
-    
-    # 日期间翻译（中文显示）
-    day_text = '今天' if day == 'today' else '明天'
-    
-    # 问题文本（加🪙和🙏）
-    question = f"🪙硬币啊~硬币~告诉我{day_text}{stock}是涨还是跌？🙏"
-    
-    # 创建Embed（固定蓝色，无其他文字，只GIF）
-    embed = discord.Embed(title=question, color=0x3498DB)  # 固定Discord蓝
-    
-    # URL 模式：根据结果选择Imgur GIF
-    if is_up:
-        embed.set_image(url='https://i.imgur.com/hXY5B8Z.gif')  # 涨的GIF
-    else:
-        embed.set_image(url='https://i.imgur.com/co0MGhu.gif')  # 跌的GIF
-    
-    await interaction.response.send_message(embed=embed)
-
-# 新命令：/buy codes:字符串（股票代码列表）
-@app_commands.describe(codes="输入股票代码，用逗号分隔，最多12个 e.g. AAPL,TSLA,GOOG,MSFT")
-@bot.tree.command(name='buy', description='幸运大转盘：今天买什么？输入代码列表，转盘选一个推荐~')
-async def buy(interaction: discord.Interaction, codes: str):
-    # 先defer，防3s响应限（动画需时）
-    await interaction.response.defer()
-    
-    # 解析代码列表
-    codes_list = [c.strip().upper() for c in codes.split(',') if c.strip()]
-    if not codes_list:
-        await interaction.followup.send("哎呀，代码列表不能为空！试试 /buy codes:AAPL,TSLA", ephemeral=True)
-        return
-    if len(codes_list) > 12:
-        await interaction.followup.send("最多12个代码哦~ 简化列表试试！", ephemeral=True)
-        return
-    
-    # 随机选赢家
-    winner = random.choice(codes_list)
-    
-    # 构建轮盘序列：快转几圈 + 慢停到赢家
-    full_wheel = codes_list * random.randint(2, 3)  # 2-3圈
-    fast_spins = random.sample(range(len(full_wheel)), random.randint(8, 15))  # 随机快转位置
-    fast_sequence = [full_wheel[i] for i in fast_spins]
-    
-    # 慢停序列：从随机点渐近赢家
-    slow_start = random.choice(codes_list)
-    slow_sequence = [slow_start]
-    for _ in range(random.randint(3, 6)):  # 3-6步慢转
-        next_code = random.choice(codes_list)
-        slow_sequence.append(next_code)
-    slow_sequence.append(winner)  # 最终停
-    
-    # 总序列
-    spin_sequence = fast_sequence + slow_sequence
-    
-    # 初始Embed
-    embed = discord.Embed(title="今天买什么？🛍️", description="🌀 大转盘启动中... 转啊转~", color=0x3498DB)
-    await interaction.followup.send(embed=embed)
-    
-    # 动画：编辑Embed显示当前“指针”
-    for i, current in enumerate(spin_sequence):
-        # 延迟：快转0.2s，慢转渐增0.5-1s
-        if i < len(fast_sequence):
-            await asyncio.sleep(0.2)
-        else:
-            await asyncio.sleep(0.5 + (i - len(fast_sequence)) * 0.1)  # 慢到1s
-        
-        # 更新描述：显示当前代码 + 箭头效果
-        arrow = " → " if i < len(spin_sequence) - 1 else " ✅"
-        embed.description = f"🌀 转动中... 当前: {current}{arrow}"
-        await interaction.edit_original_response(embed=embed)
-    
-    # 最终停：推荐赢家
-    embed.description = f"🎉 转盘停下！今天推荐买: **{winner}** 🤑\n(纯娱乐，投资需谨慎~)"
-    await interaction.edit_original_response(embed=embed)
-
-# 运行Bot
-if __name__ == '__main__':
-    if not TOKEN:
-        raise ValueError('请设置DISCORD_TOKEN环境变量！')
-    bot.run(TOKEN)
+# ===== 启动 Bot =====
+bot.run(DISCORD_TOKEN)
