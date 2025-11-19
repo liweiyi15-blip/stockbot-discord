@@ -56,11 +56,10 @@ def market_status():
 
 async def fetch_fmp_stock_quote(symbol: str):
     """
-    【核心修正】使用用户指定的 stable/quote 接口
-    这个接口在盘前返回的 price (如 401.25) 是准确的昨日收盘价
+    使用 stable/quote 接口
+    盘中返回实时数据，盘前返回昨日准确收盘
     """
     try:
-        # 替换为正确的 URL
         url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol.upper()}&apikey={FMP_API_KEY}"
         async with bot.session.get(url, timeout=10) as r:
             if r.status != 200: return None
@@ -74,13 +73,12 @@ async def fetch_finnhub_quote(symbol: str):
         url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
         async with bot.session.get(url, timeout=10) as r:
             data = await r.json()
-            # Finnhub: c 是昨日收盘(T-1), pc 是前日收盘(T-2)
             return data if data and data.get("c") is not None else None
     except:
         return None
 
 async def fetch_fmp_extended_trade(symbol: str):
-    """获取盘前/盘后最新的成交价 (Trade Price)"""
+    """获取盘前/盘后最新的成交价"""
     try:
         url = f"https://financialmodelingprep.com/stable/aftermarket-trade?symbol={symbol.upper()}&apikey={FMP_API_KEY}"
         async with bot.session.get(url, timeout=10) as r:
@@ -120,14 +118,11 @@ async def stock(interaction: discord.Interaction, symbol: str):
     quote_data = await quote_task
     extended_data = await trade_task if trade_task else None
 
-    # 【基准价设定】
+    # 基准价 (Base) - 用于盘前盘后计算
     base_close = None
-    
     if quote_data:
-        # 使用 stable/quote 接口返回的 price (401.25)
         base_close = quote_data.get("price")
     else:
-        # 备用 Finnhub: 使用 c (Current/Yesterday Close)
         fh = await fetch_finnhub_quote(symbol)
         if fh: base_close = fh.get("c")
 
@@ -137,17 +132,17 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
     # 2. 计算逻辑
     if status == "open":
-        # === 盘中 ===
+        # === 盘中 (Open) ===
         if quote_data:
             current_price = quote_data.get("price")
             change_amount = quote_data.get("change", 0)
-            change_pct = quote_data.get("changesPercentage", 0)
             
-            # 补救：如果接口没返回涨跌，手动计算
-            if change_amount == 0 and base_close and current_price != base_close:
-                 change_amount = current_price - base_close
-                 change_pct = (change_amount / base_close) * 100
+            # 【关键修复】优先取 stable 接口的 changePercentage (单数)
+            # 如果没有，再尝试 changesPercentage (复数，防备用的)
+            change_pct = quote_data.get("changePercentage") or quote_data.get("changesPercentage") or 0
+            
         elif base_close:
+            # Finnhub 备用
             fh = await fetch_finnhub_quote(symbol)
             if fh:
                 current_price = fh.get("c")
@@ -159,20 +154,19 @@ async def stock(interaction: discord.Interaction, symbol: str):
         if extended_data and extended_data.get("price"):
             current_price = extended_data["price"]
             
-            # 计算：实时成交价 - 基准价
+            # 盘前盘后手动计算：实时成交价 - 基准价
             if base_close:
                 change_amount = current_price - base_close
                 if base_close != 0:
                     change_pct = (change_amount / base_close) * 100
         else:
-            # 无成交，显示基准价
             current_price = base_close
 
     else: # closed_night
         current_price = base_close
         if quote_data:
             change_amount = quote_data.get("change", 0)
-            change_pct = quote_data.get("changesPercentage", 0)
+            change_pct = quote_data.get("changePercentage") or quote_data.get("changesPercentage") or 0
 
     # 3. 输出结果
     if current_price is None or current_price == 0:
@@ -217,6 +211,6 @@ async def crypto(interaction: discord.Interaction, symbol: str):
 
 @bot.event
 async def on_ready():
-    print(f"Bot 已上线: {bot.user} | 异步模式 | 使用 stable/quote")
+    print(f"Bot 已上线: {bot.user} | 异步模式 | 字段修复版")
 
 bot.run(DISCORD_TOKEN)
