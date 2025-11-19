@@ -52,25 +52,21 @@ def market_status():
     elif close_time < now <= aftermarket_end: return "aftermarket"
     else: return "closed_night"
 
-# ===== 数据源接口 (带日志) =====
+# ===== 数据源接口 =====
 
 async def fetch_fmp_stock_quote(symbol: str):
+    """
+    【核心修正】使用用户指定的 stable/quote 接口
+    这个接口在盘前返回的 price (如 401.25) 是准确的昨日收盘价
+    """
     try:
-        url = f"https://financialmodelingprep.com/api/v3/quote/{symbol.upper()}?apikey={FMP_API_KEY}"
-        print(f"🔍 [DEBUG] 请求 Quote: {url}")
+        # 替换为正确的 URL
+        url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol.upper()}&apikey={FMP_API_KEY}"
         async with bot.session.get(url, timeout=10) as r:
-            if r.status != 200: 
-                print(f"❌ [DEBUG] Quote 请求失败: Status {r.status}")
-                return None
+            if r.status != 200: return None
             data = await r.json()
-            if data:
-                # 打印关键字段
-                print(f"📄 [DEBUG] Quote 返回数据: price={data[0].get('price')}, previousClose={data[0].get('previousClose')}")
-            else:
-                print("❌ [DEBUG] Quote 返回空数据")
             return data[0] if data else None
-    except Exception as e:
-        print(f"❌ [DEBUG] Quote 异常: {e}")
+    except:
         return None
 
 async def fetch_finnhub_quote(symbol: str):
@@ -78,31 +74,27 @@ async def fetch_finnhub_quote(symbol: str):
         url = f"https://finnhub.io/api/v1/quote?symbol={symbol}&token={FINNHUB_API_KEY}"
         async with bot.session.get(url, timeout=10) as r:
             data = await r.json()
-            print(f"📄 [DEBUG] Finnhub 返回: c={data.get('c')}, pc={data.get('pc')}")
-            return data if data and data.get("c") not in (0, None) else None
+            # Finnhub: c 是昨日收盘(T-1), pc 是前日收盘(T-2)
+            return data if data and data.get("c") is not None else None
     except:
         return None
 
 async def fetch_fmp_extended_trade(symbol: str):
+    """获取盘前/盘后最新的成交价 (Trade Price)"""
     try:
         url = f"https://financialmodelingprep.com/stable/aftermarket-trade?symbol={symbol.upper()}&apikey={FMP_API_KEY}"
-        print(f"🔍 [DEBUG] 请求 Trade: {url}")
         async with bot.session.get(url, timeout=10) as r:
             data = await r.json()
             if not data or not isinstance(data, list) or len(data) == 0:
-                print("❌ [DEBUG] Trade 返回空")
                 return None
             
             data.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
             latest = data[0]
-            print(f"📄 [DEBUG] Trade 最新成交: price={latest.get('price')}, time={latest.get('timestamp')}")
             return latest if latest.get("price") not in (None, 0) else None
-    except Exception as e:
-        print(f"❌ [DEBUG] Trade 异常: {e}")
+    except:
         return None
 
 async def fetch_fmp_crypto_quote(symbol: str):
-    # ... (保持不变)
     try:
         url = f"https://financialmodelingprep.com/stable/quote?symbol={symbol}&apikey={FMP_API_KEY}"
         async with bot.session.get(url, timeout=10) as r:
@@ -112,7 +104,7 @@ async def fetch_fmp_crypto_quote(symbol: str):
     except:
         return None
 
-# ===== /stock 命令 (带日志) =====
+# ===== /stock 命令 =====
 @bot.tree.command(name="stock", description="查询美股实时价格（支持盘前/盘后）")
 @app_commands.describe(symbol="股票代码，例如 TSLA")
 async def stock(interaction: discord.Interaction, symbol: str):
@@ -120,45 +112,41 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
     symbol = symbol.upper().strip()
     status = market_status()
-    print(f"\n=== 开始查询: {symbol} | 状态: {status} ===")
     
+    # 1. 并行获取数据
     quote_task = fetch_fmp_stock_quote(symbol)
     trade_task = fetch_fmp_extended_trade(symbol) if status in ["pre_market", "aftermarket"] else None
     
     quote_data = await quote_task
     extended_data = await trade_task if trade_task else None
 
-    # --- 这里的逻辑是关键 ---
+    # 【基准价设定】
     base_close = None
-    source_used = "None"
     
     if quote_data:
-        # 强制只取 price
+        # 使用 stable/quote 接口返回的 price (401.25)
         base_close = quote_data.get("price")
-        source_used = f"FMP Quote Price (v={base_close})"
-        
-        # 如果这里 base_close 依然是 408.92，那说明 API 返回的就是 408.92
-        if base_close == quote_data.get("previousClose"):
-             print("⚠️ [警告] FMP Quote 的 price 和 previousClose 完全一样！")
-             
     else:
-        # 备用 Finnhub
+        # 备用 Finnhub: 使用 c (Current/Yesterday Close)
         fh = await fetch_finnhub_quote(symbol)
-        if fh: 
-            base_close = fh.get("pc")
-            source_used = f"Finnhub PC (v={base_close})"
-
-    print(f"🛠 [决策] 最终使用的基准昨收: {base_close} | 来源: {source_used}")
+        if fh: base_close = fh.get("c")
 
     current_price = None
     change_amount = 0.0
     change_pct = 0.0
 
+    # 2. 计算逻辑
     if status == "open":
+        # === 盘中 ===
         if quote_data:
             current_price = quote_data.get("price")
             change_amount = quote_data.get("change", 0)
             change_pct = quote_data.get("changesPercentage", 0)
+            
+            # 补救：如果接口没返回涨跌，手动计算
+            if change_amount == 0 and base_close and current_price != base_close:
+                 change_amount = current_price - base_close
+                 change_pct = (change_amount / base_close) * 100
         elif base_close:
             fh = await fetch_finnhub_quote(symbol)
             if fh:
@@ -167,23 +155,26 @@ async def stock(interaction: discord.Interaction, symbol: str):
                 change_pct = fh.get("dp", 0)
 
     elif status in ["pre_market", "aftermarket"]:
+        # === 盘前/盘后 ===
         if extended_data and extended_data.get("price"):
             current_price = extended_data["price"]
-            print(f"📈 [计算] 当前价({current_price}) - 基准({base_close})")
             
+            # 计算：实时成交价 - 基准价
             if base_close:
                 change_amount = current_price - base_close
                 if base_close != 0:
                     change_pct = (change_amount / base_close) * 100
         else:
+            # 无成交，显示基准价
             current_price = base_close
 
-    else: 
+    else: # closed_night
         current_price = base_close
         if quote_data:
             change_amount = quote_data.get("change", 0)
             change_pct = quote_data.get("changesPercentage", 0)
 
+    # 3. 输出结果
     if current_price is None or current_price == 0:
         await interaction.followup.send(f"未找到 **{symbol}** 的有效数据。")
         return
@@ -195,8 +186,6 @@ async def stock(interaction: discord.Interaction, symbol: str):
         change_amount = 0
         change_pct = 0
         if status != "open": display_label = "(收盘)"
-    
-    print(f"✅ [完成] 结果: {current_price} | 涨跌: {change_amount}")
 
     color = 0xFF0000 if change_amount >= 0 else 0x00FF00
     embed = discord.Embed(title=f"**{symbol}** {display_label}", color=color)
@@ -209,9 +198,9 @@ async def stock(interaction: discord.Interaction, symbol: str):
 
     await interaction.followup.send(embed=embed)
 
+# ===== Crypto =====
 @bot.tree.command(name="crypto", description="查询数字货币实时价格")
 async def crypto(interaction: discord.Interaction, symbol: str):
-    # ... (保持不变)
     await interaction.response.defer()
     original = symbol.strip().upper()
     symbol = original + "USD" if not original.endswith("USD") else original
@@ -228,6 +217,6 @@ async def crypto(interaction: discord.Interaction, symbol: str):
 
 @bot.event
 async def on_ready():
-    print(f"Bot 已上线: {bot.user} | 🔍 调试模式已开启")
+    print(f"Bot 已上线: {bot.user} | 异步模式 | 使用 stable/quote")
 
 bot.run(DISCORD_TOKEN)
